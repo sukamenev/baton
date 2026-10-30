@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -83,12 +84,19 @@ func main() {
 			printRemoteTransferPrompt(token)
 			return
 		}
+		alias := ""
+		var restArgs []string
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: baton save <session-name> [agent]  (or 'baton save --remote' for encrypted cloud transfer)")
-			os.Exit(1)
+			cwd, _ := os.Getwd()
+			alias = filepath.Base(cwd)
+			if alias == "" || alias == "." || alias == "/" {
+				alias = "saved-session"
+			}
+		} else {
+			alias = os.Args[2]
+			restArgs = os.Args[3:]
 		}
-		alias := os.Args[2]
-		agent, query := resolveAgentAndQuery(os.Args[3:], "latest")
+		agent, query := resolveAgentAndQuery(restArgs, "latest")
 		msg, err := nameSession(alias, agent, query)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
