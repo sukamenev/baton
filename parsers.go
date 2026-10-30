@@ -1859,11 +1859,11 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 		shownLines = i + 1
 	}
 
-	// Split remaining lines into self-contained part files (<= 700 lines and <= 40,000 bytes each)
-	// so the agent can read ALL parts in parallel via Read/read_file (without StartLine/EndLine)
-	// in a single step without skipping middle lines.
-	const maxPartLines = 700
-	const maxPartBytes = 40000
+	// Split remaining lines into self-contained part files (<= 550 lines and <= 28,000 bytes each)
+	// so every agent (including Codex CLI's ~10k-token per-command buffer and AGY's 45KB read_file)
+	// can read each part file in full via a separate tool call without any truncation.
+	const maxPartLines = 550
+	const maxPartBytes = 28000
 	var partFiles []string
 	remLines := lines[shownLines:]
 	partIdx := 1
