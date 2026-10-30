@@ -557,6 +557,24 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		}
 	}
 
+	// Include sessions imported from remote URLs via `baton load <URL>`
+	importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
+	if importFiles, err := filepath.Glob(filepath.Join(importDir, "*.baton.json")); err == nil {
+		for _, m := range importFiles {
+			ag := "imported"
+			base := filepath.Base(m)
+			for _, known := range []string{"claude", "codex", "agy", "pi", "hermes"} {
+				if strings.HasPrefix(base, known+"-") {
+					ag = known
+					break
+				}
+			}
+			if agent == "all" || agent == ag {
+				addFile(ag, m, aliases[m], "")
+			}
+		}
+	}
+
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].ModTime.After(all[j].ModTime)
 	})
@@ -785,6 +803,19 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 		SessionID:  fmt.Sprintf("%s-%s", agent, base),
 		SourceFile: realPath,
 		ModTime:    modTime,
+	}
+
+	if strings.HasSuffix(realPath, ".baton.json") {
+		data, err := os.ReadFile(realPath)
+		if err != nil {
+			return nil, err
+		}
+		var imported ParsedSession
+		if err := json.Unmarshal(data, &imported); err != nil {
+			return nil, err
+		}
+		imported.ModTime = modTime
+		return &imported, nil
 	}
 
 	if strings.HasSuffix(realPath, ".pb") {

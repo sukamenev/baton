@@ -166,7 +166,9 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 /baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
 ```
 
-`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-handoff/<session_id>/global_rules/`, and loads the session context.
+`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-handoff/<session_id>/global_rules/`, registers the downloaded session in your local `baton` index (`~/.cache/baton/imported/` so subsequent `baton load` or `baton list` calls work offline without re-downloading), and loads the full active session context.
+
+> **Codex CLI Sandbox Note:** `baton install` places a granular Starlark rule in `~/.codex/rules/baton.rules` (`prefix_rule(pattern=["baton"], decision="allow")`) so `baton` can read session directories and download remote bundles without requiring you to enable `network_access = true` globally in `~/.codex/config.toml`.
 
 ---
 

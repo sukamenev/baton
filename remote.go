@@ -115,23 +115,67 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 	for _, p := range chain {
 		id, err := p.fn(encryptedB64)
 		if err == nil && id != "" {
+			var urlToken string
 			switch p.name {
 			case "pasters":
-				return fmt.Sprintf("https://paste.rs/%s#%s", id, hexKey), nil
+				urlToken = fmt.Sprintf("https://paste.rs/%s", id)
 			case "dpaste":
 				if strings.HasPrefix(id, "http") {
-					return fmt.Sprintf("%s#%s", id, hexKey), nil
+					urlToken = id
+				} else {
+					urlToken = fmt.Sprintf("https://dpaste.org/%s/raw", id)
 				}
-				return fmt.Sprintf("https://dpaste.org/%s/raw#%s", id, hexKey), nil
 			case "termbin":
-				return fmt.Sprintf("https://termbin.com/%s#%s", id, hexKey), nil
+				urlToken = fmt.Sprintf("https://termbin.com/%s", id)
 			default:
-				return fmt.Sprintf("baton:%s:%s#%s", p.name, id, hexKey), nil
+				urlToken = fmt.Sprintf("baton:%s:%s", p.name, id)
 			}
+			cacheUploadedSnapshot(urlToken, encryptedB64)
+			return fmt.Sprintf("%s#%s", urlToken, hexKey), nil
 		}
 		lastErr = err
 	}
 	return "", fmt.Errorf("all paste providers failed (last error: %v)", lastErr)
+}
+
+func localSnapshotCachePath(beforeHash string) string {
+	cacheDir := filepath.Join(filepath.Dir(aliasesFilePath()), "vault_cache")
+	_ = os.MkdirAll(cacheDir, 0700)
+	return filepath.Join(cacheDir, sha256Hex([]byte(strings.TrimSpace(beforeHash)))+".baton")
+}
+
+func cacheUploadedSnapshot(beforeHash, encryptedB64 string) {
+	_ = os.WriteFile(localSnapshotCachePath(beforeHash), []byte(encryptedB64), 0600)
+}
+
+func saveImportedSessionToLocalIndex(ps *ParsedSession) {
+	if ps == nil {
+		return
+	}
+	importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
+	if err := os.MkdirAll(importDir, 0700); err != nil {
+		return
+	}
+	safeID := filepath.Base(ps.SessionID)
+	if safeID == "" || safeID == "." || safeID == "/" {
+		safeID = fmt.Sprintf("%s-%d", ps.Agent, time.Now().Unix())
+	}
+	importPath := filepath.Join(importDir, safeID+".baton.json")
+	psCopy := *ps
+	psCopy.ModTime = time.Now()
+	if data, err := json.MarshalIndent(&psCopy, "", "  "); err == nil {
+		_ = os.WriteFile(importPath, data, 0600)
+		aliases := loadAliases()
+		title := strings.TrimSpace(ps.Title)
+		if title == "" && ps.CWD != "" {
+			title = filepath.Base(ps.CWD)
+		}
+		if title == "" || title == "." || title == "/" {
+			title = safeID
+		}
+		aliases[importPath] = title
+		_ = saveAliases(aliases)
+	}
 }
 
 func pullRemoteSession(token string) (string, error) {
@@ -184,6 +228,15 @@ func pullRemoteSession(token string) (string, error) {
 		}
 	}
 	if err != nil {
+		// Fallback to local vault_cache if this machine pushed or previously fetched this URL
+		if cached, cErr := os.ReadFile(localSnapshotCachePath(beforeHash)); cErr == nil && len(cached) > 0 {
+			encryptedB64 = string(cached)
+			err = nil
+		}
+	} else if encryptedB64 != "" {
+		cacheUploadedSnapshot(beforeHash, encryptedB64)
+	}
+	if err != nil {
 		return "", fmt.Errorf("failed to download snapshot: %w", err)
 	}
 
@@ -191,6 +244,7 @@ func pullRemoteSession(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	saveImportedSessionToLocalIndex(bundle.Session)
 
 	cwd, _ := os.Getwd()
 	var restoredFiles []string
