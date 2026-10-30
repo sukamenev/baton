@@ -1810,7 +1810,7 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 	fullActive := sb.String()
 	_ = os.WriteFile(activeContextPath, []byte(fullActive), 0600)
 
-	const maxStdoutBytes = 26000
+	const maxStdoutBytes = 7000
 	if len(fullActive) <= maxStdoutBytes {
 		return fullActive + fmt.Sprintf("---\nHandoff Status: COMPLETE (%d/%d post-compaction turns loaded)\n", len(turns), len(turns))
 	}
