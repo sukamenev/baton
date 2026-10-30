@@ -94,7 +94,7 @@ Running `baton update` performs a two-stage upgrade:
 
 ### 1. Recommended Workflow: `baton save` & `baton load`
 
-Save your active session under a memorable name (via the agent's native rename command or `baton save auth-refactor`):
+Before switching agents, save your active session into baton's store under a memorable name (`baton save auth-refactor`; without a name, the current folder name is used):
 
 ```text
 Save this session as auth-refactor
@@ -112,7 +112,7 @@ When `claude` hits its 5-hour quota limit, open `codex`, `agy`, `pi`, or `hermes
 Continue session auth-refactor
 ```
 
-Or to grab the most recent session in the current folder:
+Or to grab the most recently saved session:
 
 ```text
 Continue the latest session
@@ -124,20 +124,20 @@ Or via the slash command:
 /baton load auth-refactor
 ```
 
-**Forgot to name the session?** Ask the agent *"What recent sessions are there?"* (or run `baton list`). `baton` returns a numbered list (`#1`, `#2`, `#3`, ...) with timestamps, working directories, and prompt previews so you can simply say *"Load session #1"* (or run `/baton load 1`):
+**Forgot the session name?** Ask the agent *"What saved sessions are there?"* (or run `baton list`). `baton load` and `baton list` only see sessions saved into baton's store (via `save`, `push`, or a remote `load <URL>`). `baton list` returns a numbered list (`#1`, `#2`, `#3`, ...) with timestamps, working directories, and the last prompt so you can simply say *"Load session #1"* (or run `/baton load 1`):
 
 ```text
 /baton load 1
 ```
 
-**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). `baton import` scans the raw session logs of all five agents on disk and prints the 15 most recent sessions (current folder first), skipping the caller's own running session and empty "baton load" stubs. Each entry shows the last user prompt, i.e. where the work stopped. Pick one by number or name:
+**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Unlike `baton load`, `baton import` scans the raw session logs of all five agents on disk and prints the 15 most recent sessions (current folder first), skipping the caller's own running session and empty "baton load" stubs. Each entry shows the last user prompt, i.e. where the work stopped. Pick one by number or name:
 
 ```text
 baton import 1
 baton import auth-refactor
 ```
 
-The chosen session is saved into `~/.config/baton/saved/` and loaded immediately; afterwards it appears in `baton list` like any manually saved session.
+If the session was renamed with the agent's native command (`customTitle` in Claude, `session_index.jsonl` in Codex, `session_info` in Pi, the `title` column in Hermes), that name is shown in the list, can be used with `baton import <name>`, and becomes its saved name. The chosen session is saved into `~/.config/baton/saved/` and loaded immediately; afterwards it appears in `baton list` like any manually saved session.
 
 ### 2. Encrypted Cross-Machine Transfer (Desktop -> Laptop)
 
