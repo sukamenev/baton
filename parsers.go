@@ -594,12 +594,12 @@ func isCallerOwnSession(path string) bool {
 	return false
 }
 
-// discoverImportCandidates returns raw on-disk agent sessions for `baton import`,
+// discoverImportCandidates returns raw on-disk sessions of all agents for `baton import`,
 // skipping the caller's own running session and small "baton load" stub sessions
 // so that the numbering shown by `baton import` matches `baton import <#>`.
-func discoverImportCandidates(agent string) []SessionCandidate {
+func discoverImportCandidates() []SessionCandidate {
 	var out []SessionCandidate
-	for _, c := range discoverSessions(agent, "") {
+	for _, c := range discoverSessions("all", "") {
 		if len(out) >= importListLimit {
 			break
 		}
@@ -617,9 +617,9 @@ func discoverImportCandidates(agent string) []SessionCandidate {
 	return out
 }
 
-func formatImportListReport(agent, unmatchedQuery string, candidates []SessionCandidate) string {
+func formatImportListReport(unmatchedQuery string, candidates []SessionCandidate) string {
 	if len(candidates) == 0 {
-		return fmt.Sprintf("No raw agent sessions found for agent '%s'.", agent)
+		return "No raw agent sessions found on disk."
 	}
 	var sb strings.Builder
 	if unmatchedQuery != "" {
@@ -631,43 +631,37 @@ func formatImportListReport(agent, unmatchedQuery string, candidates []SessionCa
 	sb.WriteString("\n**How to import a session into baton and load it:**\n")
 	sb.WriteString("- By candidate number: `baton import 1`\n")
 	sb.WriteString("- By session name: `baton import <name>`\n")
-	sb.WriteString("- Only one agent's sessions: `baton import claude` (codex, agy, pi, hermes)\n")
 	return sb.String()
 }
 
-// importSession implements `baton import [agent] [#|name]`: with no query it lists
-// raw agent sessions; with a candidate number or name it saves the session into
-// Baton's saved store and immediately loads it.
-func importSession(agent, query string) (string, error) {
+// importSession implements `baton import [#|name]`: with no query it lists raw
+// sessions of all agents; with a candidate number or session name from that list
+// it saves the session into Baton's saved store and immediately loads it.
+func importSession(query string) (string, error) {
 	cleanupOldHandoffs()
 	query = strings.TrimSpace(query)
-	candidates := discoverImportCandidates(agent)
+	candidates := discoverImportCandidates()
 	if query == "" || strings.EqualFold(query, "list") || query == "?" {
-		return formatImportListReport(agent, "", candidates), nil
+		return formatImportListReport("", candidates), nil
 	}
 
 	var chosen *SessionCandidate
 	if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
 		chosen = &candidates[idx]
 	}
-	if chosen == nil {
-		for i := range candidates {
-			if candidates[i].Title != "" && strings.EqualFold(candidates[i].Title, query) {
-				chosen = &candidates[i]
-				break
-			}
+	for i := range candidates {
+		if chosen == nil && candidates[i].Title != "" && strings.EqualFold(candidates[i].Title, query) {
+			chosen = &candidates[i]
+		}
+	}
+	qLower := strings.ToLower(query)
+	for i := range candidates {
+		if chosen == nil && candidates[i].Title != "" && strings.Contains(strings.ToLower(candidates[i].Title), qLower) {
+			chosen = &candidates[i]
 		}
 	}
 	if chosen == nil {
-		for _, c := range discoverSessions(agent, query) {
-			if !isCallerOwnSession(c.Path) {
-				chosen = &c
-				break
-			}
-		}
-	}
-	if chosen == nil {
-		return formatImportListReport(agent, query, candidates), nil
+		return formatImportListReport(query, candidates), nil
 	}
 
 	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)

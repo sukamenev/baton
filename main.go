@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.1"
+const version = "0.3.2"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -107,8 +107,7 @@ func main() {
 		agent, query := resolveAgentAndQuery(os.Args[2:], "")
 		fmt.Println(listSessionsReport(agent, query))
 	case "import":
-		agent, query := resolveAgentAndQuery(os.Args[2:], "")
-		report, err := importSession(agent, query)
+		report, err := importSession(strings.Join(os.Args[2:], " "))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Import error: %v\n", err)
 			os.Exit(1)
@@ -205,7 +204,7 @@ Usage:
   baton push [name]                 Pack (tar.gz), encrypt (AES-256-GCM), and upload session + uncommitted files to the cloud
   baton load [name|#|URL|token]     Load the latest saved session in baton, a specific saved session, or a remote URL/token
   baton list                        List saved sessions in baton's local store (#1, #2, ...)
-  baton import [agent] [#|name]     List raw sessions of all agents, or import one into baton's store and load it
+  baton import [#|name]             List raw sessions of all agents, or import one into baton's store and load it
   baton clear                       Delete all locally saved sessions and temporary handoff files in baton
   baton turn <session_id> <turn_id> Print full untruncated output of a specific conversation turn
   baton install                     Install SKILL.md and /baton slash command across all supported agents

@@ -265,6 +265,11 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("BATON_CONFIG_DIR", filepath.Join(tmp, "baton-cfg"))
 	t.Setenv("PI_CODING_AGENT_DIR", tmp)
+	// Isolate the other agents' session stores so `baton import` sees only the test session
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmp, "claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex"))
+	t.Setenv("HERMES_HOME", filepath.Join(tmp, "hermes"))
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		t.Fatal(err)
@@ -312,11 +317,14 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	}
 
 	// 5. Import a raw agent session that was never saved (`baton import`, `baton import 1`)
-	importList, err := importSession("pi", "")
+	importList, err := importSession("")
 	if err != nil || !strings.Contains(importList, "**#1**") || !strings.Contains(importList, "billing-fix") {
 		t.Fatalf("expected numbered raw session list from importSession, err=%v, report=%s", err, importList)
 	}
-	importReport, err := importSession("pi", "1")
+	if unmatched, err := importSession("claude"); err != nil || !strings.Contains(unmatched, "No agent session matched") {
+		t.Fatalf("expected unmatched import name to return the list, err=%v, report=%s", err, unmatched)
+	}
+	importReport, err := importSession("1")
 	if err != nil || !strings.Contains(importReport, "Imported [pi]") || !strings.Contains(importReport, "Fix invoice rounding") {
 		t.Fatalf("expected importSession to import and load raw session #1, err=%v, report=%s", err, importReport)
 	}

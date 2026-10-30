@@ -135,7 +135,6 @@ Or via the slash command:
 ```text
 baton import 1
 baton import auth-refactor
-baton import claude        # only Claude sessions
 ```
 
 The chosen session is saved into `~/.config/baton/saved/` and loaded immediately; afterwards it appears in `baton list` like any manually saved session.
@@ -190,7 +189,7 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 | `baton push [name]` | Saves the session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
 | `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
 | `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...) stored in `~/.config/baton/saved/`. |
-| `baton import [agent] [#\|name]` | Without a number/name, lists raw sessions of all agents on disk (`#1`, `#2`, ...); with one, saves that session into `~/.config/baton/saved/` and loads it. Use it when the session was never saved with `baton save`. |
+| `baton import [#\|name]` | Without arguments, lists raw sessions of all agents on disk (`#1`, `#2`, ...); with a number or a session name from that list, saves the session into `~/.config/baton/saved/` and loads it. Use it when the session was never saved with `baton save`. |
 | `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff caches (`/tmp/baton-handoff/`). |
 | `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
 | `baton update` | Updates the `baton` binary and refreshes `SKILL.md` and `/baton` across all installed agents. |
