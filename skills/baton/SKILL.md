@@ -10,7 +10,7 @@ description: >-
 
 # Baton Skill: Cross-Agent & Cross-Machine Session Handoff
 
-When the user asks in plain language (Russian, English, or any language) to continue or transfer a session, run the corresponding `baton` command via your shell tool (Note for Codex CLI: for network commands `baton push`, `baton load https://...`, or `baton update`, pass `sandbox_permissions: ["require_escalated"]` so the sandbox allows outbound HTTPS):
+When the user asks in plain language (Russian, English, or any language) to continue or transfer a session, run the corresponding `baton` command via your shell tool (Note for Codex CLI: always pass `sandbox_permissions: "require_escalated"` when running `baton` so it can access agent session directories and outbound HTTPS; this is pre-authorized via `~/.codex/rules/baton.rules`):
 
 | What the user says (examples) | Command to run |
 |---|---|

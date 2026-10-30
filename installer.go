@@ -20,7 +20,7 @@ description: >-
 
 # Baton Skill: Cross-Agent & Cross-Machine Session Handoff
 
-When the user asks in plain language (Russian, English, or any language) to continue or transfer a session, run the corresponding ` + "`baton`" + ` command via your shell tool (Note for Codex CLI: for network commands ` + "`baton push`" + `, ` + "`baton load https://...`" + `, or ` + "`baton update`" + `, pass ` + "`sandbox_permissions: [\"require_escalated\"]`" + ` so the sandbox allows outbound HTTPS):
+When the user asks in plain language (Russian, English, or any language) to continue or transfer a session, run the corresponding ` + "`baton`" + ` command via your shell tool (Note for Codex CLI: always pass ` + "`sandbox_permissions: \"require_escalated\"`" + ` when running ` + "`baton`" + ` so it can access agent session directories and outbound HTTPS; this is pre-authorized via ` + "`~/.codex/rules/baton.rules`" + `):
 
 | What the user says (examples) | Command to run |
 |---|---|
@@ -81,6 +81,10 @@ func skillTargetPaths(home string) []string {
 	}
 }
 
+func codexRulesContent(binPath string) string {
+	return fmt.Sprintf("prefix_rule(pattern=[\"baton\"], decision=\"allow\")\nprefix_rule(pattern=[%q], decision=\"allow\")\n", binPath)
+}
+
 func syncSkillsSilent() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -94,6 +98,10 @@ func syncSkillsSilent() error {
 	cmdTarget := filepath.Join(claudeBaseDir(home), "commands", "baton.md")
 	if err := os.MkdirAll(filepath.Dir(cmdTarget), 0755); err == nil {
 		_ = os.WriteFile(cmdTarget, []byte(slashCommandContent), 0644)
+	}
+	rulesTarget := filepath.Join(codexBaseDir(home), "rules", "baton.rules")
+	if err := os.MkdirAll(filepath.Dir(rulesTarget), 0755); err == nil {
+		_ = os.WriteFile(rulesTarget, []byte(codexRulesContent(resolveBinaryPath())), 0644)
 	}
 	return nil
 }
@@ -121,6 +129,13 @@ func runInstall() error {
 		}
 	}
 
+	rulesTarget := filepath.Join(codexBaseDir(home), "rules", "baton.rules")
+	if err := os.MkdirAll(filepath.Dir(rulesTarget), 0755); err == nil {
+		if err := os.WriteFile(rulesTarget, []byte(codexRulesContent(binPath)), 0644); err == nil {
+			fmt.Printf("[OK] Installed Codex execpolicy rule: %s\n", rulesTarget)
+		}
+	}
+
 	fmt.Println("\nInstallation complete. Ensure baton is in your PATH (e.g. ~/.local/bin/baton).")
 	return nil
 }
@@ -136,6 +151,7 @@ func runStatus() {
 	}{
 		{"Claude Skill (~/.claude/skills/baton/SKILL.md)", filepath.Join(claudeBaseDir(home), "skills", "baton", "SKILL.md")},
 		{"Codex Skill (~/.codex/skills/baton/SKILL.md)", filepath.Join(codexBaseDir(home), "skills", "baton", "SKILL.md")},
+		{"Codex Execpolicy Rule (~/.codex/rules/baton.rules)", filepath.Join(codexBaseDir(home), "rules", "baton.rules")},
 		{"Antigravity Skill (~/.gemini/config/skills/baton/SKILL.md)", filepath.Join(home, ".gemini", "config", "skills", "baton", "SKILL.md")},
 		{"Pi Skill (~/.pi/agent/skills/baton/SKILL.md)", filepath.Join(piBaseDir(home), "skills", "baton", "SKILL.md")},
 		{"Hermes Skill (~/.hermes/skills/baton/SKILL.md)", filepath.Join(hermesBaseDir(home), "skills", "baton", "SKILL.md")},
