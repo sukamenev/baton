@@ -944,9 +944,10 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 					recordToolSideEffects(name, input, modSet, &ps.Commands)
 					argBytes, _ := json.Marshal(input)
 					addTurn(SessionTurn{
-						Role:     "tool_use",
-						ToolName: name,
-						Text:     fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(argBytes), 300)),
+						Role:      "tool_use",
+						ToolName:  name,
+						Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(argBytes), 300)),
+						RawOutput: fmt.Sprintf("Call `%s`: %s", name, string(argBytes)),
 					})
 				}
 			}
@@ -1103,9 +1104,10 @@ func parsePiJSONL(path string, ps *ParsedSession) error {
 							recordToolSideEffects(name, args, modSet, &ps.Commands)
 							rawArgs, _ := json.Marshal(args)
 							addTurn(e.id, SessionTurn{
-								Role:     "tool_use",
-								ToolName: name,
-								Text:     fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(rawArgs), 300)),
+								Role:      "tool_use",
+								ToolName:  name,
+								Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(rawArgs), 300)),
+								RawOutput: fmt.Sprintf("Call `%s`: %s", name, string(rawArgs)),
 							})
 						}
 					}
@@ -1210,14 +1212,15 @@ func parseAgyTranscriptJSONL(path string, ps *ParsedSession) error {
 					recordToolSideEffects(name, args, modSet, &ps.Commands)
 					rawArgs, _ := json.Marshal(args)
 					addTurn(SessionTurn{
-						Role:     "tool_use",
-						ToolName: name,
-						Text:     fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(rawArgs), 300)),
+						Role:      "tool_use",
+						ToolName:  name,
+						Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(rawArgs), 300)),
+						RawOutput: fmt.Sprintf("Call `%s`: %s", name, string(rawArgs)),
 					})
 				}
 			}
 		default:
-			if strings.TrimSpace(content) != "" && (strings.Contains(stepType, "TOOL") || strings.Contains(stepType, "OBSERVATION")) {
+			if strings.TrimSpace(content) != "" && (stepType == "GENERIC" || strings.Contains(stepType, "TOOL") || strings.Contains(stepType, "OBSERVATION")) {
 				addTurn(SessionTurn{
 					Role:      "tool_result",
 					Text:      summarizeToolOutput(content),
@@ -1300,9 +1303,10 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 				_ = json.Unmarshal([]byte(argsStr), &argsMap)
 				recordToolSideEffects(name, argsMap, modSet, &ps.Commands)
 				addTurn(SessionTurn{
-					Role:     "tool_use",
-					ToolName: name,
-					Text:     fmt.Sprintf("Call `%s`: %s", name, truncateInline(argsStr, 300)),
+					Role:      "tool_use",
+					ToolName:  name,
+					Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(argsStr, 300)),
+					RawOutput: fmt.Sprintf("Call `%s`: %s", name, argsStr),
 				})
 				continue
 			}
@@ -1496,9 +1500,10 @@ func parseHermesSQLiteSession(path, targetSessionID string, ps *ParsedSession) e
 							_ = json.Unmarshal([]byte(argsStr), &argsMap)
 							recordToolSideEffects(name, argsMap, modSet, &ps.Commands)
 							addTurn(SessionTurn{
-								Role:     "tool_use",
-								ToolName: name,
-								Text:     fmt.Sprintf("Call `%s`: %s", name, truncateInline(argsStr, 300)),
+								Role:      "tool_use",
+								ToolName:  name,
+								Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(argsStr, 300)),
+								RawOutput: fmt.Sprintf("Call `%s`: %s", name, argsStr),
 							})
 						}
 					}
@@ -1795,7 +1800,11 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 		if t.ToolName != "" {
 			sb.WriteString(fmt.Sprintf(" (`%s`)", t.ToolName))
 		}
-		sb.WriteString("\n" + t.Text + "\n\n")
+		body := t.Text
+		if t.RawOutput != "" {
+			body = t.RawOutput
+		}
+		sb.WriteString("\n" + body + "\n\n")
 	}
 
 	fullActive := sb.String()
