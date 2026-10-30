@@ -424,18 +424,30 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			return
 		}
-		metaTitle, metaCWD, preview := inspectSessionQuickMeta(ag, path)
 		title := aliases[path]
-		if title == "" {
-			title = metaTitle
-		}
 		if title == "" {
 			title = defaultTitle
 		}
-		if metaCWD == "" {
-			metaCWD = defaultCWD
-		}
-		if query != "" && !candidateMatchesQuery(path, title, preview, query) {
+		if query != "" {
+			metaTitle, metaCWD, preview := inspectSessionQuickMeta(ag, path)
+			if title == "" {
+				title = metaTitle
+			}
+			if metaCWD != "" {
+				defaultCWD = metaCWD
+			}
+			if !candidateMatchesQuery(path, title, preview, query) {
+				return
+			}
+			seen[path] = true
+			all = append(all, SessionCandidate{
+				Agent:   ag,
+				Path:    path,
+				Title:   title,
+				CWD:     defaultCWD,
+				ModTime: info.ModTime(),
+				Preview: preview,
+			})
 			return
 		}
 		seen[path] = true
@@ -443,9 +455,8 @@ func discoverSessions(agent, query string) []SessionCandidate {
 			Agent:   ag,
 			Path:    path,
 			Title:   title,
-			CWD:     metaCWD,
+			CWD:     defaultCWD,
 			ModTime: info.ModTime(),
-			Preview: preview,
 		})
 	}
 
@@ -540,6 +551,26 @@ func discoverSessions(agent, query string) []SessionCandidate {
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].ModTime.After(all[j].ModTime)
 	})
+	if query == "" {
+		limit := 15
+		if len(all) < limit {
+			limit = len(all)
+		}
+		for i := 0; i < limit; i++ {
+			if !strings.Contains(all[i].Path, "::") {
+				metaTitle, metaCWD, preview := inspectSessionQuickMeta(all[i].Agent, all[i].Path)
+				if all[i].Title == "" {
+					all[i].Title = metaTitle
+				}
+				if all[i].CWD == "" {
+					all[i].CWD = metaCWD
+				}
+				if all[i].Preview == "" {
+					all[i].Preview = preview
+				}
+			}
+		}
+	}
 	return all
 }
 
