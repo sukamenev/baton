@@ -310,4 +310,21 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	if !strings.Contains(listAfterClear, "No saved Baton sessions found") {
 		t.Fatalf("expected empty saved session list after clear, got: %s", listAfterClear)
 	}
+
+	// 5. Import a raw agent session that was never saved (`baton import`, `baton import 1`)
+	importList, err := importSession("pi", "")
+	if err != nil || !strings.Contains(importList, "**#1**") || !strings.Contains(importList, "billing-fix") {
+		t.Fatalf("expected numbered raw session list from importSession, err=%v, report=%s", err, importList)
+	}
+	importReport, err := importSession("pi", "1")
+	if err != nil || !strings.Contains(importReport, "Imported [pi]") || !strings.Contains(importReport, "Fix invoice rounding") {
+		t.Fatalf("expected importSession to import and load raw session #1, err=%v, report=%s", err, importReport)
+	}
+	if listAfterImport := listSessionsReport("", ""); !strings.Contains(listAfterImport, "billing-fix") {
+		t.Fatalf("expected imported session in saved list, got: %s", listAfterImport)
+	}
+	reportImportedByName, err := loadSessionContext("", "billing-fix")
+	if err != nil || !strings.Contains(reportImportedByName, "Fix invoice rounding") {
+		t.Fatalf("expected imported session to load by name, err=%v, report=%s", err, reportImportedByName)
+	}
 }

@@ -279,9 +279,10 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 			}
 			preview := ""
 			for i := len(meta.PostCompact) - 1; i >= 0; i-- {
-				txt := strings.TrimSpace(meta.PostCompact[i].Text)
-				low := strings.ToLower(txt)
-				if meta.PostCompact[i].Role == "user" && txt != "" && !strings.HasPrefix(low, "baton ") && !strings.HasPrefix(low, "/baton") && low != "baton" {
+				if meta.PostCompact[i].Role != "user" {
+					continue
+				}
+				if txt := cleanUserPrompt(meta.PostCompact[i].Text); txt != "" {
 					preview = truncateInline(txt, 140)
 					break
 				}
@@ -550,8 +551,17 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 		sb.WriteString(fmt.Sprintf("# Saved Baton Sessions (showing top %d of %d)\n\n", limit, len(candidates)))
 	}
 
-	for i := 0; i < limit; i++ {
-		c := candidates[i]
+	writeCandidateRows(&sb, candidates[:limit])
+	sb.WriteString("\n**How to load a saved session:**\n")
+	sb.WriteString("- Latest saved session: `baton load`\n")
+	sb.WriteString("- By candidate number: `baton load 1`\n")
+	sb.WriteString("- By session name: `baton load <name>`\n")
+	sb.WriteString("- Session not saved before the agent ran out of context/quota: `baton import`\n")
+	return sb.String()
+}
+
+func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
+	for i, c := range candidates {
 		title := c.Title
 		if title == "" {
 			title = "(unnamed)"
@@ -565,11 +575,126 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 			sb.WriteString(fmt.Sprintf("   Preview: %s\n", c.Preview))
 		}
 	}
-	sb.WriteString("\n**How to load a saved session:**\n")
-	sb.WriteString("- Latest saved session: `baton load`\n")
-	sb.WriteString("- By candidate number: `baton load 1`\n")
-	sb.WriteString("- By session name: `baton load <name>`\n")
+}
+
+// --- `baton import`: pick a raw agent session that was never saved with `baton save` ---
+
+const importListLimit = 15
+
+// isCallerOwnSession reports whether a raw session file belongs to the agent
+// session that is running baton right now (it is a fresh handoff receiver,
+// not something to import).
+func isCallerOwnSession(path string) bool {
+	base := filepath.Base(path)
+	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "HERMES_SESSION_ID"} {
+		if id := strings.TrimSpace(os.Getenv(env)); id != "" && strings.Contains(base, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// discoverImportCandidates returns raw on-disk agent sessions for `baton import`,
+// skipping the caller's own running session and small "baton load" stub sessions
+// so that the numbering shown by `baton import` matches `baton import <#>`.
+func discoverImportCandidates(agent string) []SessionCandidate {
+	var out []SessionCandidate
+	for _, c := range discoverSessions(agent, "") {
+		if len(out) >= importListLimit {
+			break
+		}
+		if isCallerOwnSession(c.Path) {
+			continue
+		}
+		realPath := strings.SplitN(c.Path, "::", 2)[0]
+		if info, err := os.Stat(realPath); err == nil && info.Size() < 4*1024*1024 && !strings.Contains(c.Path, "::") {
+			if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil && isHandoffStubSession(ps) {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func formatImportListReport(agent, unmatchedQuery string, candidates []SessionCandidate) string {
+	if len(candidates) == 0 {
+		return fmt.Sprintf("No raw agent sessions found for agent '%s'.", agent)
+	}
+	var sb strings.Builder
+	if unmatchedQuery != "" {
+		sb.WriteString(fmt.Sprintf("> No agent session matched `%s`. Showing the %d most recent agent sessions below:\n\n", unmatchedQuery, len(candidates)))
+	} else {
+		sb.WriteString(fmt.Sprintf("# Agent Sessions Available for Import (top %d, current folder first)\n\n", len(candidates)))
+	}
+	writeCandidateRows(&sb, candidates)
+	sb.WriteString("\n**How to import a session into baton and load it:**\n")
+	sb.WriteString("- By candidate number: `baton import 1`\n")
+	sb.WriteString("- By session name: `baton import <name>`\n")
+	sb.WriteString("- Only one agent's sessions: `baton import claude` (codex, agy, pi, hermes)\n")
 	return sb.String()
+}
+
+// importSession implements `baton import [agent] [#|name]`: with no query it lists
+// raw agent sessions; with a candidate number or name it saves the session into
+// Baton's saved store and immediately loads it.
+func importSession(agent, query string) (string, error) {
+	cleanupOldHandoffs()
+	query = strings.TrimSpace(query)
+	candidates := discoverImportCandidates(agent)
+	if query == "" || strings.EqualFold(query, "list") || query == "?" {
+		return formatImportListReport(agent, "", candidates), nil
+	}
+
+	var chosen *SessionCandidate
+	if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
+		chosen = &candidates[idx]
+	}
+	if chosen == nil {
+		for i := range candidates {
+			if candidates[i].Title != "" && strings.EqualFold(candidates[i].Title, query) {
+				chosen = &candidates[i]
+				break
+			}
+		}
+	}
+	if chosen == nil {
+		for _, c := range discoverSessions(agent, query) {
+			if !isCallerOwnSession(c.Path) {
+				chosen = &c
+				break
+			}
+		}
+	}
+	if chosen == nil {
+		return formatImportListReport(agent, query, candidates), nil
+	}
+
+	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse session %s: %w", chosen.Path, err)
+	}
+	if ps.Title == "" {
+		ps.Title = chosen.Title
+	}
+	if ps.CWD == "" {
+		ps.CWD = chosen.CWD
+	}
+	savePath, err := saveSessionToBatonStore(ps, "")
+	if err != nil {
+		return "", err
+	}
+	saved, err := parseSessionFile(ps.Agent, savePath, time.Now())
+	if err != nil {
+		return "", err
+	}
+	handoffDir, err := writeHandoffDirectory(saved, nil)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Imported [%s] `%s` into baton as **%s** (`%s`).\n\n",
+		chosen.Agent, filepath.Base(chosen.Path), saved.Title, filepath.Base(savePath)) +
+		formatHandoffSummary(saved, handoffDir, nil), nil
 }
 
 func listSessionsReport(agent, query string) string {
@@ -1200,12 +1325,105 @@ func inspectSessionQuickMeta(agent, path string) (title, cwd, preview string) {
 			if c, ok := row["cwd"].(string); ok && cwd == "" {
 				cwd = c
 			}
-		}
-		if preview == "" && (strings.Contains(line, `"user"`) || strings.Contains(line, `"USER_INPUT"`)) {
-			preview = truncateInline(line, 140)
+			if preview == "" {
+				preview = userPromptFromRow(row)
+			}
 		}
 	}
-	return title, cwd, preview
+	// Prefer the last user prompt (where the session stopped) over the first one.
+	if last := lastUserPromptInTail(f, 256*1024); last != "" {
+		preview = last
+	}
+	return title, cwd, truncateInline(preview, 140)
+}
+
+// lastUserPromptInTail scans the last tailBytes of a JSONL session file and
+// returns the most recent user prompt found there.
+func lastUserPromptInTail(f *os.File, tailBytes int64) string {
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	offset := info.Size() - tailBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, 0); err != nil {
+		return ""
+	}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	if offset > 0 {
+		scanner.Scan() // skip the partial first line
+	}
+	last := ""
+	for scanner.Scan() {
+		var row map[string]interface{}
+		if json.Unmarshal(scanner.Bytes(), &row) == nil {
+			if p := userPromptFromRow(row); p != "" {
+				last = p
+			}
+		}
+	}
+	return last
+}
+
+// userPromptFromRow extracts the text typed by the user from one JSONL row of any
+// supported agent (Claude, Codex, AGY, Pi), skipping tool results and injected
+// meta/system messages.
+func userPromptFromRow(row map[string]interface{}) string {
+	if isMeta, _ := row["isMeta"].(bool); isMeta {
+		return ""
+	}
+	if typ, _ := row["type"].(string); typ == "USER_INPUT" {
+		s, _ := row["content"].(string)
+		if i := strings.Index(s, "<USER_REQUEST>"); i >= 0 {
+			s = s[i+len("<USER_REQUEST>"):]
+			if j := strings.Index(s, "</USER_REQUEST>"); j >= 0 {
+				s = s[:j]
+			}
+		}
+		return cleanUserPrompt(s)
+	}
+	msg, _ := row["message"].(map[string]interface{})
+	if msg == nil {
+		msg, _ = row["payload"].(map[string]interface{})
+	}
+	if msg == nil || msg["role"] != "user" {
+		return ""
+	}
+	switch content := msg["content"].(type) {
+	case string:
+		return cleanUserPrompt(content)
+	case []interface{}:
+		for _, part := range content {
+			p, _ := part.(map[string]interface{})
+			if t, _ := p["type"].(string); t == "text" || t == "input_text" {
+				text, _ := p["text"].(string)
+				if s := cleanUserPrompt(text); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func cleanUserPrompt(s string) string {
+	s = strings.TrimSpace(s)
+	// Agent-injected context: <environment_context>, <command-name>, <system-reminder>,
+	// <local-command-caveat>, AGENTS.md instructions, etc.
+	if s == "" || strings.HasPrefix(s, "<") || strings.HasPrefix(s, "# AGENTS.md instructions") ||
+		strings.HasPrefix(s, "Base directory for this skill:") ||
+		(strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") && !strings.Contains(s, "\n")) {
+		return ""
+	}
+	// Bare baton commands say nothing about what the session was about.
+	low := strings.ToLower(s)
+	if low == "baton" || strings.HasPrefix(low, "baton ") || strings.HasPrefix(low, "/baton") {
+		return ""
+	}
+	return s
 }
 
 func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, error) {
@@ -2172,7 +2390,11 @@ func truncateInline(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "..."
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 func sortedKeys(m map[string]bool) []string {

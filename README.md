@@ -130,6 +130,16 @@ Or via the slash command:
 /baton load 1
 ```
 
+**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). `baton import` scans the raw session logs of all five agents on disk and prints the 15 most recent sessions (current folder first), skipping the caller's own running session and empty "baton load" stubs. Each entry shows the last user prompt, i.e. where the work stopped. Pick one by number or name:
+
+```text
+baton import 1
+baton import auth-refactor
+baton import claude        # only Claude sessions
+```
+
+The chosen session is saved into `~/.config/baton/saved/` and loaded immediately; afterwards it appears in `baton list` like any manually saved session.
+
 ### 2. Encrypted Cross-Machine Transfer (Desktop -> Laptop)
 
 Need to leave your desktop and continue on your laptop without committing broken WIP code to Git (or working in a folder with Fossil, SVN, or no VCS)?
@@ -180,6 +190,7 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 | `baton push [name]` | Saves the session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
 | `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
 | `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...) stored in `~/.config/baton/saved/`. |
+| `baton import [agent] [#\|name]` | Without a number/name, lists raw sessions of all agents on disk (`#1`, `#2`, ...); with one, saves that session into `~/.config/baton/saved/` and loads it. Use it when the session was never saved with `baton save`. |
 | `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff caches (`/tmp/baton-handoff/`). |
 | `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
 | `baton update` | Updates the `baton` binary and refreshes `SKILL.md` and `/baton` across all installed agents. |

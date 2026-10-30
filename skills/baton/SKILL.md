@@ -25,11 +25,14 @@ When the user asks in plain language (Russian, English, or any language) to cont
 | "Push/send this session for my laptop" / "Отправь сессию на другой компьютер" | `baton push` |
 | "Load remote session https://...#key or baton:..." / "Загрузи сессию по ссылке/токену" | `baton load <URL\|token>` |
 | "Clear/delete all saved sessions" / "Очисти/удали все сохранённые сессии" | `baton clear` |
+| "The session was not saved (context/quota ran out), take one of the existing sessions" / "Импортируй сессию" / "Возьми сессию из существующих" | `baton import` |
+| "Import session #2" / "Импортируй вторую сессию" / "Импортируй сессию auth-refactor" | `baton import 2` / `baton import auth-refactor` |
 
-## Rules After Running `baton load`
+## Rules After Running `baton load` or `baton import`
 
 1. **If `baton` returned a numbered candidate list (`#1`, `#2`, ...):**
-   - Show the numbered candidates to the user so they can pick one, or if #1 clearly matches the current project directory, run `baton load 1`.
+   - Show the numbered candidates to the user so they can pick one, or if #1 clearly matches the current project directory, run `baton load 1` (or `baton import 1` for the `baton import` list).
+   - If `baton load` reports that there are no saved sessions (or none of them is the one the user wants), run `baton import` to list raw sessions of all agents and let the user pick one. `baton import <#|name>` saves the chosen session into baton and loads it in one step.
 2. **Check `Handoff Status` at the bottom of the `baton load` output:**
    - If it says `Handoff Status: PARTIAL`, read **every file** listed under `Remaining Active Context Files` in numerical order (`part1`, `part2`, ...), issuing a **separate top-level tool call for each individual file** (never combine multiple part files into a single `cat`/shell command or a single `functions.exec` script, omit `StartLine`/`EndLine` so each part file is read in full without truncation, and in Codex `functions.exec` start the script with `// @exec: {"max_output_tokens": 50000}`) before replying to the user.
    - Once all part files are loaded (`Handoff Status: COMPLETE` or after reading all `Remaining Active Context Files`), review the modified files, recent shell commands, the latest compaction checkpoint (`/compact`), and post-compaction dialogue turns.
