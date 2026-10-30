@@ -1730,8 +1730,7 @@ func writeHandoffDirectory(ps *ParsedSession, globalRules map[string]string) (st
 		}
 	}
 
-	summary := formatHandoffSummary(ps, handoffDir, globalRules)
-	_ = os.WriteFile(filepath.Join(handoffDir, "summary.md"), []byte(summary), 0600)
+	_ = formatHandoffSummary(ps, handoffDir, globalRules)
 	return handoffDir, nil
 }
 
