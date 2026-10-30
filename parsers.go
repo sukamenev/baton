@@ -1746,6 +1746,8 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 		sb.WriteString(fmt.Sprintf("- **Working Directory**: `%s`\n", ps.CWD))
 	}
 	sb.WriteString(fmt.Sprintf("- **Source log**: `%s`\n", ps.SourceFile))
+	activeContextPath := filepath.Join(handoffDir, "active_context.md")
+	sb.WriteString(fmt.Sprintf("- **Active context file**: `%s`\n", activeContextPath))
 	sb.WriteString(fmt.Sprintf("- **Full lossless transcript**: `%s`\n", filepath.Join(handoffDir, "full_dialogue.md")))
 	sb.WriteString(fmt.Sprintf("- **Turn index (`get_session_turn`)**: `%s`\n\n", filepath.Join(handoffDir, "turns.json")))
 
@@ -1764,10 +1766,10 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 	}
 
 	if len(ps.Commands) > 0 {
-		sb.WriteString("## Recent Executed Commands:\n```bash\n")
+		sb.WriteString("## Executed Commands:\n```bash\n")
 		start := 0
-		if len(ps.Commands) > 10 {
-			start = len(ps.Commands) - 10
+		if len(ps.Commands) > 25 {
+			start = len(ps.Commands) - 25
 		}
 		for _, c := range ps.Commands[start:] {
 			sb.WriteString(c + "\n")
@@ -1787,14 +1789,9 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 		sb.WriteString(fmt.Sprintf("## Latest Compaction Checkpoint (after %d turns):\n%s\n\n", ps.PreCompactTurns, ps.CompactSummary))
 	}
 
-	sb.WriteString("## Post-Compaction Dialogue (Recent Turns):\n\n")
+	sb.WriteString("## Post-Compaction Dialogue (Active Context Turns):\n\n")
 	turns := ps.PostCompact
-	start := 0
-	if len(turns) > 25 {
-		start = len(turns) - 25
-		sb.WriteString(fmt.Sprintf("> *Showing latest 25 of %d post-compaction turns. Full lossless history is saved in `%s`.*\n\n", len(turns), filepath.Join(handoffDir, "full_dialogue.md")))
-	}
-	for _, t := range turns[start:] {
+	for _, t := range turns {
 		sb.WriteString(fmt.Sprintf("### [Turn #%d] %s", t.TurnID, t.Role))
 		if t.ToolName != "" {
 			sb.WriteString(fmt.Sprintf(" (`%s`)", t.ToolName))
@@ -1802,7 +1799,29 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 		sb.WriteString("\n" + t.Text + "\n\n")
 	}
 
-	return sb.String()
+	fullActive := sb.String()
+	_ = os.WriteFile(activeContextPath, []byte(fullActive), 0600)
+
+	const maxStdoutBytes = 26000
+	if len(fullActive) <= maxStdoutBytes {
+		return fullActive + fmt.Sprintf("---\nHandoff Status: COMPLETE (%d/%d post-compaction turns loaded)\n", len(turns), len(turns))
+	}
+
+	lines := strings.Split(fullActive, "\n")
+	totalLines := len(lines)
+	var out strings.Builder
+	shownLines := 0
+	for i, line := range lines {
+		if out.Len()+len(line)+1 > maxStdoutBytes && shownLines > 0 {
+			break
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+		shownLines = i + 1
+	}
+	out.WriteString(fmt.Sprintf("---\nHandoff Status: PARTIAL (lines 1-%d of %d shown above)\nRemaining Active Context File: %s (lines %d-%d)\n",
+		shownLines, totalLines, activeContextPath, shownLines+1, totalLines))
+	return out.String()
 }
 
 func detectVCSStatus() string {
