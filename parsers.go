@@ -1827,8 +1827,38 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 		out.WriteByte('\n')
 		shownLines = i + 1
 	}
-	out.WriteString(fmt.Sprintf("---\nHandoff Status: PARTIAL (lines 1-%d of %d shown above)\nRemaining Active Context File: %s (lines %d-%d)\n",
-		shownLines, totalLines, activeContextPath, shownLines+1, totalLines))
+
+	// Split remaining lines into self-contained part files (<= 700 lines and <= 40,000 bytes each)
+	// so the agent can read ALL parts in parallel via Read/read_file (without StartLine/EndLine)
+	// in a single step without skipping middle lines.
+	const maxPartLines = 700
+	const maxPartBytes = 40000
+	var partFiles []string
+	remLines := lines[shownLines:]
+	partIdx := 1
+	for len(remLines) > 0 {
+		var partBuf strings.Builder
+		taken := 0
+		for i, line := range remLines {
+			if taken > 0 && (taken >= maxPartLines || partBuf.Len()+len(line)+1 > maxPartBytes) {
+				break
+			}
+			partBuf.WriteString(line)
+			partBuf.WriteByte('\n')
+			taken = i + 1
+		}
+		partPath := filepath.Join(handoffDir, fmt.Sprintf("active_context_part%d.md", partIdx))
+		_ = os.WriteFile(partPath, []byte(partBuf.String()), 0600)
+		partFiles = append(partFiles, partPath)
+		remLines = remLines[taken:]
+		partIdx++
+	}
+
+	out.WriteString(fmt.Sprintf("---\nHandoff Status: PARTIAL (lines 1-%d of %d shown above; %d remaining part files)\nRemaining Active Context Files:\n",
+		shownLines, totalLines, len(partFiles)))
+	for _, pf := range partFiles {
+		out.WriteString(fmt.Sprintf("- %s\n", pf))
+	}
 	return out.String()
 }
 
