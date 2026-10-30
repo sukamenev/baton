@@ -141,22 +141,20 @@ func main() {
 		}
 		fmt.Println(text)
 	case "push":
-		agent := "auto"
-		query := "latest"
 		storage := "auto"
 		localDir := ""
+		var agentQueryArgs []string
 		if len(os.Args) > 2 {
-			agent, query = resolveAgentAndQuery(os.Args[2:3], "latest")
+			agentQueryArgs = os.Args[2:]
+			if len(agentQueryArgs) > 2 {
+				storage = agentQueryArgs[2]
+				if len(agentQueryArgs) > 3 {
+					localDir = agentQueryArgs[3]
+				}
+				agentQueryArgs = agentQueryArgs[:2]
+			}
 		}
-		if len(os.Args) > 3 {
-			query = os.Args[3]
-		}
-		if len(os.Args) > 4 {
-			storage = os.Args[4]
-		}
-		if len(os.Args) > 5 {
-			localDir = os.Args[5]
-		}
+		agent, query := resolveAgentAndQuery(agentQueryArgs, "latest")
 		token, err := pushRemoteSession(agent, query, storage, localDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Push error: %v\n", err)

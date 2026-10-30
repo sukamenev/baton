@@ -201,6 +201,12 @@ func nameSession(name, agent, query string) (string, error) {
 	if err := saveAliases(aliases); err != nil {
 		return "", err
 	}
+	touchPath := chosen.Path
+	if idx := strings.Index(touchPath, "::"); idx > 0 {
+		touchPath = touchPath[:idx]
+	}
+	now := time.Now()
+	_ = os.Chtimes(touchPath, now, now)
 	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s`)\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
 		name, chosen.Agent, filepath.Base(chosen.Path), name, name), nil
 }
@@ -552,11 +558,6 @@ func discoverSessions(agent, query string) []SessionCandidate {
 	}
 
 	sort.Slice(all, func(i, j int) bool {
-		iSaved := aliases[all[i].Path] != ""
-		jSaved := aliases[all[j].Path] != ""
-		if iSaved != jSaved {
-			return iSaved
-		}
 		return all[i].ModTime.After(all[j].ModTime)
 	})
 	if query == "" {
