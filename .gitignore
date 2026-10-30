@@ -1,0 +1,6 @@
+/baton
+*.exe
+*.baton
+*.baton.bak
+*.new
+*.old
