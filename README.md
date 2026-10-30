@@ -84,9 +84,13 @@ cd /tmp/baton && go build -ldflags="-s -w" -o ~/.local/bin/baton .
 
 Once every 24 hours on normal CLI invocations, `baton` spawns a detached `baton update --check-quiet` process that fetches [`latest.txt`](latest.txt) with a 3-second timeout. If offline or up to date, it **exits immediately with zero output and zero errors**. If a newer version is available, `baton` prints a one-line notice (`Run 'baton update' to upgrade`, or upgrades automatically if you set `BATON_AUTO_UPDATE=1`).
 
-Running `baton update` performs a two-stage upgrade:
-1. **If `go` is installed:** rebuilds from auditable source via `go install github.com/sukamenev/baton@latest` (verified against Go's transparency log `sum.golang.org`).
-2. **If `go` is not installed (Windows/macOS/Linux binary users):** downloads `baton_<GOOS>_<GOARCH>` and `checksums.txt` from GitHub Releases, verifies the `SHA-256` digest, atomically replaces the executable, and refreshes `SKILL.md` and `/baton` across all installed agents.
+Running `baton update` upgrades baton in place:
+1. **If Go is installed:** rebuilds baton from source.
+2. **Otherwise:** downloads the release binary for your OS from GitHub Releases, verifies its SHA-256 checksum, and replaces the executable.
+
+The new version then refreshes `SKILL.md` and `/baton` in all installed agents.
+
+> **Upgrading from v0.3.4 or older:** if Go is installed, the old `baton update` did not replace `~/.local/bin/baton`. Reinstall once following [INSTALL.md](INSTALL.md).
 
 ---
 
@@ -94,22 +98,22 @@ Running `baton update` performs a two-stage upgrade:
 
 ### 1. Recommended Workflow: `baton save` & `baton load`
 
-Before switching agents, save your active session into baton's store under a memorable name (`baton save auth-refactor`; without a name, the current folder name is used):
+Before switching agents, save your active session into baton's store under a memorable name (`baton save my_session`; without a name, the current folder name is used):
 
 ```text
-Save this session as auth-refactor
+Save this session as my_session
 ```
 
 `baton save` outputs a ready-to-paste prompt that works even in an agent where `baton` has never been installed yet:
 
 ```text
-Load session auth-refactor using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
+Load session my_session using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
 ```
 
 When `claude` hits its 5-hour quota limit, open `codex`, `agy`, `pi`, or `hermes` and ask in plain words (you don't even need to specify which agent had the session):
 
 ```text
-Continue session auth-refactor
+Continue session my_session
 ```
 
 Or to grab the most recently saved session:
@@ -121,23 +125,31 @@ Continue the latest session
 Or via the slash command:
 
 ```text
-/baton load auth-refactor
+/baton load my_session
 ```
 
-**Forgot the session name?** Ask the agent *"What saved sessions are there?"* (or run `baton list`). `baton load` and `baton list` only see sessions saved into baton's store (via `save`, `push`, or a remote `load <URL>`). `baton list` returns a numbered list (`#1`, `#2`, `#3`, ...) with timestamps, working directories, and the last prompt so you can simply say *"Load session #1"* (or run `/baton load 1`):
+> **Load into a clean context.** If the agent already has a conversation going, start a new one first (`/clear` in Claude Code and agy, `/new` in Codex), then ask to load the session. Otherwise the loaded session lands on top of the old conversation: two tasks get mixed and the context window fills up faster. A freshly launched agent needs nothing extra. The same applies to `baton import`.
+
+**Forgot the session name?** Ask the agent *"What saved sessions are there?"* (or run `baton list`). It shows a numbered list of sessions saved into baton, newest first, with save time, agent, name, session ID, folder, and the last prompt, so you can simply say *"Load session #1"* (or run `/baton load 1`):
 
 ```text
 /baton load 1
 ```
 
-**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Unlike `baton load`, `baton import` scans the raw session logs of all five agents on disk and prints the 15 most recent sessions (current folder first), skipping the caller's own running session and empty "baton load" stubs. Each entry shows the last user prompt, i.e. where the work stopped. Pick one by number or name:
+**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Unlike `baton load`, it lists the 15 most recent sessions of all five agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
 
 ```text
 baton import 1
-baton import auth-refactor
+baton import my_session
+baton import 726d401d
+baton import 7 as my_session
 ```
 
-If the session was renamed with the agent's native command (`customTitle` in Claude, `session_index.jsonl` in Codex, `session_info` in Pi, the `title` column in Hermes), that name is shown in the list, can be used with `baton import <name>`, and becomes its saved name. The chosen session is saved into `~/.config/baton/saved/` and loaded immediately; afterwards it appears in `baton list` like any manually saved session.
+The chosen session is saved into baton and loaded right away; afterwards it appears in `baton list`. If you renamed the session in the agent itself, that name is shown in the list and used when saving.
+
+Each list row looks like `#1  2026-10-31 00:37  [claude] my_session  · id 726d401d`. The ID is the agent's own session ID (first 8 characters of the UUID; the full ID for Hermes) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
+
+`baton save` always saves the current session; to save any other session under a name, use `baton import <#|id> as <name>`.
 
 ### 2. Encrypted Cross-Machine Transfer (Desktop -> Laptop)
 
@@ -185,15 +197,15 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 
 | Command | Description |
 |---|---|
-| `baton save [alias] [agent]` | Saves a snapshot of the current active session into Baton's local saved store (`~/.config/baton/saved/`, defaulting to the current folder name if `alias` is omitted) and prints a self-bootstrapping handoff prompt. If another saved session already uses the name, the new one is saved as `alias-2`, `alias-3`, ...; re-saving the same session updates it in place. |
-| `baton push [name]` | Saves the session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
-| `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
-| `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...) stored in `~/.config/baton/saved/`. |
-| `baton import [#\|name]` | Without arguments, lists raw sessions of all agents on disk (`#1`, `#2`, ...); with a number or a session name from that list, saves the session into `~/.config/baton/saved/` and loads it. Use it when the session was never saved with `baton save`. |
-| `baton rm <name\|#>` | Deletes one saved session from baton's store (exact name, or the number shown by `baton list`). The original agent session on disk is not touched. |
+| `baton save [name]` | Saves the current session into baton (`~/.config/baton/saved/`) under a name, the folder name by default, and prints a ready-to-paste prompt for the next agent. If another session already has that name, this one is saved as `name-2`. |
+| `baton push [name]` | Saves the current session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
+| `baton load [name\|#\|id\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load my_session`), candidate number (`baton load 1`), session ID (`baton load 726d401d`), or remote URL/token (`baton load https://...#key`). |
+| `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...), newest first. |
+| `baton import [#\|name\|id] [as name] [--no-load]` | Lists recent sessions of all agents (`#1`, `#2`, ...); with a number, name, or session ID, saves that session into baton (under the `as` name, if given) and loads it (`--no-load`: only saves). For sessions that were never saved. |
+| `baton rm <name\|#>` | Deletes one saved session (exact name or number from `baton list`). The agent's own session log is not touched. |
 | `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff caches (`/tmp/baton-handoff/`). |
 | `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
-| `baton update` | Updates the `baton` binary and refreshes `SKILL.md` and `/baton` across all installed agents. |
+| `baton update` | Updates baton to the latest version and refreshes `SKILL.md` and `/baton` in all installed agents. |
 
 ---
 

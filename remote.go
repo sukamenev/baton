@@ -78,8 +78,8 @@ func slimSessionForRemote(ps *ParsedSession) *ParsedSession {
 	return &cp
 }
 
-func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
-	ps, err := findAndParseSessionForAction(agent, query, true)
+func pushRemoteSession(name, storage, localDir string) (string, error) {
+	ps, err := parseCurrentSession()
 	if err != nil {
 		return "", err
 	}
@@ -88,11 +88,16 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 	if ps.CWD == "" && cwd != "" {
 		ps.CWD = cwd
 	}
-	saveName := strings.TrimSpace(ps.Title)
+	saveName := strings.TrimSpace(name)
+	if saveName == "" {
+		saveName = strings.TrimSpace(ps.Title)
+	}
 	if saveName == "" && cwd != "" {
 		saveName = filepath.Base(cwd)
 	}
 	_, _, _ = saveSessionToBatonStore(ps, saveName)
+	// The receiving machine saves the session under the bundle's title
+	ps.Title = saveName
 
 	files := collectModifiedWorkspaceFiles(cwd, ps.ModifiedFiles)
 	projectRules := collectProjectRuleFiles(cwd)

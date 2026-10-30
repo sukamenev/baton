@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.5"
+const version = "0.3.6"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -20,10 +20,10 @@ func isKnownAgent(s string) bool {
 
 // resolveAgentAndQuery allows natural one-argument calls:
 // - `baton load`                   -> agent="all",    query="latest"
-// - `baton load auth-refactor`     -> agent="all",    query="auth-refactor"
+// - `baton load my_session`        -> agent="all",    query="my_session"
 // - `baton load 1`                 -> agent="all",    query="1"
 // - `baton load claude`            -> agent="claude", query="latest"
-// - `baton load claude auth-ref`   -> agent="claude", query="auth-ref"
+// - `baton load claude my_session` -> agent="claude", query="my_session"
 func resolveAgentAndQuery(args []string, defaultQuery string) (string, string) {
 	if len(args) == 0 {
 		return "all", defaultQuery
@@ -75,8 +75,11 @@ func main() {
 		runStatus()
 	case "store", "save", "name":
 		if len(os.Args) > 2 && (os.Args[2] == "--remote" || os.Args[2] == "-r" || os.Args[2] == "remote") {
-			agent, query := resolveAgentAndQuery(os.Args[3:], "latest")
-			token, err := pushRemoteSession(agent, query, "auto", "")
+			name := ""
+			if len(os.Args) > 3 {
+				name = os.Args[3]
+			}
+			token, err := pushRemoteSession(name, "auto", "")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Store remote error: %v\n", err)
 				os.Exit(1)
@@ -84,8 +87,11 @@ func main() {
 			printRemoteTransferPrompt(token)
 			return
 		}
+		if msg := saveArgsError(os.Args[2:]); msg != "" {
+			fmt.Fprintln(os.Stderr, msg)
+			os.Exit(1)
+		}
 		alias := ""
-		var restArgs []string
 		if len(os.Args) < 3 {
 			cwd, _ := os.Getwd()
 			alias = filepath.Base(cwd)
@@ -94,10 +100,8 @@ func main() {
 			}
 		} else {
 			alias = os.Args[2]
-			restArgs = os.Args[3:]
 		}
-		agent, query := resolveAgentAndQuery(restArgs, "latest")
-		msg, err := nameSession(alias, agent, query)
+		msg, err := nameSession(alias)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -107,7 +111,7 @@ func main() {
 		agent, query := resolveAgentAndQuery(os.Args[2:], "")
 		fmt.Println(listSessionsReport(agent, query))
 	case "import":
-		report, err := importSession(strings.Join(os.Args[2:], " "))
+		report, err := importSession(os.Args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Import error: %v\n", err)
 			os.Exit(1)
@@ -162,21 +166,18 @@ func main() {
 		}
 		fmt.Println(text)
 	case "push":
-		storage := "auto"
-		localDir := ""
-		var agentQueryArgs []string
+		// baton push [name] [storage] [local_dir]
+		var name, storage, localDir string
 		if len(os.Args) > 2 {
-			agentQueryArgs = os.Args[2:]
-			if len(agentQueryArgs) > 2 {
-				storage = agentQueryArgs[2]
-				if len(agentQueryArgs) > 3 {
-					localDir = agentQueryArgs[3]
-				}
-				agentQueryArgs = agentQueryArgs[:2]
-			}
+			name = os.Args[2]
 		}
-		agent, query := resolveAgentAndQuery(agentQueryArgs, "latest")
-		token, err := pushRemoteSession(agent, query, storage, localDir)
+		if len(os.Args) > 3 {
+			storage = os.Args[3]
+		}
+		if len(os.Args) > 4 {
+			localDir = os.Args[4]
+		}
+		token, err := pushRemoteSession(name, storage, localDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Push error: %v\n", err)
 			os.Exit(1)
@@ -190,6 +191,21 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+// saveArgsError rejects the pre-0.3.6 forms `baton save <name> <#|agent>` and
+// `baton save <#>`: save works only with the current session now.
+func saveArgsError(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if len(args) == 1 {
+		if _, err := strconv.Atoi(strings.TrimPrefix(args[0], "#")); err != nil {
+			return ""
+		}
+		return fmt.Sprintf("Error: baton save saves only the current session. To save session %s from the list, run:\n  baton import %s\n(run 'baton import' to see the list)", args[0], args[0])
+	}
+	return fmt.Sprintf("Error: baton save takes only a name and saves the current session. To save another session under a name, run:\n  baton import <#|id> as %s\n(run 'baton import' to see the list)", args[0])
 }
 
 func printRemoteTransferPrompt(token string) {
@@ -207,11 +223,12 @@ func printUsage() {
 	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, hermes)
 
 Usage:
-  baton save [name]                 Save the active session into baton's local store (defaults to folder name)
-  baton push [name]                 Pack (tar.gz), encrypt (AES-256-GCM), and upload session + uncommitted files to the cloud
-  baton load [name|#|URL|token]     Load the latest saved session in baton, a specific saved session, or a remote URL/token
+  baton save [name]                 Save the current session into baton's local store (defaults to folder name)
+  baton push [name]                 Pack (tar.gz), encrypt (AES-256-GCM), and upload the current session + uncommitted files
+  baton load [name|#|id|URL|token]  Load the latest saved session in baton, a specific saved session, or a remote URL/token
   baton list                        List saved sessions in baton's local store (#1, #2, ...)
-  baton import [#|name]             List raw sessions of all agents, or import one into baton's store and load it
+  baton import [#|name|id] [as <name>] [--no-load]
+                                    List raw sessions of all agents, or import one into baton's store and load it
   baton rm <name|#>                 Delete one saved session from baton's store (# as shown by baton list)
   baton clear                       Delete all locally saved sessions and temporary handoff files in baton
   baton turn <session_id> <turn_id> Print full untruncated output of a specific conversation turn

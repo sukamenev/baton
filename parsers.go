@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -49,6 +50,58 @@ type SessionCandidate struct {
 	CWD     string
 	ModTime time.Time
 	Preview string
+	ID      string // agent's own session ID; derived from Path when empty
+}
+
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// agentSessionID extracts the agent's own session ID from a raw session path:
+// the Hermes id after "::", otherwise the last UUID in the path (Claude/Pi/Codex
+// file name, agy brain directory), otherwise the file name.
+func agentSessionID(path string) string {
+	if _, id, ok := strings.Cut(path, "::"); ok {
+		return id
+	}
+	if all := uuidPattern.FindAllString(path, -1); len(all) > 0 {
+		return strings.ToLower(all[len(all)-1])
+	}
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return strings.TrimPrefix(base, "session_")
+}
+
+func (c SessionCandidate) SessionID() string {
+	if c.ID != "" {
+		return c.ID
+	}
+	return agentSessionID(c.Path)
+}
+
+// shortSessionID is the ID shown in lists: the first 8 characters of a UUID,
+// or the whole ID otherwise (Hermes IDs start with a date and are not unique by prefix).
+func shortSessionID(id string) string {
+	if uuidPattern.MatchString(id) && len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// findCandidateByID returns the only candidate whose session ID starts with q
+// (at least 4 characters, case-insensitive).
+func findCandidateByID(candidates []SessionCandidate, q string) (SessionCandidate, bool) {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if len(q) < 4 {
+		return SessionCandidate{}, false
+	}
+	var found []SessionCandidate
+	for _, c := range candidates {
+		if strings.HasPrefix(strings.ToLower(c.SessionID()), q) {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		return SessionCandidate{}, false
+	}
+	return found[0], true
 }
 
 // --- Cross-Platform Agent Base Directories (Linux, macOS, Windows) ---
@@ -318,6 +371,7 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 			}
 			var meta struct {
 				Agent       string        `json:"agent"`
+				SessionID   string        `json:"session_id"`
 				Title       string        `json:"title"`
 				CWD         string        `json:"cwd"`
 				PostCompact []SessionTurn `json:"post_compact"`
@@ -360,6 +414,7 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 				CWD:     meta.CWD,
 				ModTime: info.ModTime(),
 				Preview: preview,
+				ID:      agentSessionID(strings.TrimPrefix(meta.SessionID, ag+"-")),
 			})
 		}
 	}
@@ -549,36 +604,39 @@ func selectCurrentSessionCandidate(agent string, candidates []SessionCandidate) 
 	return candidates[0]
 }
 
-func nameSession(name, agent, query string) (string, error) {
+// parseCandidate parses a raw session and fills the title and workdir known from the listing.
+func parseCandidate(c SessionCandidate) (*ParsedSession, error) {
+	ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse session %s: %w", c.Path, err)
+	}
+	if ps.Title == "" {
+		ps.Title = c.Title
+	}
+	if ps.CWD == "" {
+		ps.CWD = c.CWD
+	}
+	return ps, nil
+}
+
+// parseCurrentSession parses the raw session of the agent that is running baton
+// (`baton save` and `baton push` work only with it; other sessions go through `baton import`).
+func parseCurrentSession() (*ParsedSession, error) {
+	candidates := discoverSessions("all", "")
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no local agent sessions found")
+	}
+	return parseCandidate(selectCurrentSessionCandidate("all", candidates))
+}
+
+func nameSession(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("session name cannot be empty")
 	}
-	if query == "" {
-		query = "latest"
-	}
-	candidates := discoverSessions(agent, "")
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("no local sessions found for agent '%s'", agent)
-	}
-	chosen := selectCurrentSessionCandidate(agent, candidates)
-	if query != "latest" {
-		if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
-			chosen = candidates[idx]
-		} else {
-			filtered := discoverSessions(agent, query)
-			if len(filtered) == 0 {
-				return "", fmt.Errorf("no session matching '%s'", query)
-			}
-			chosen = filtered[0]
-		}
-	}
-	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+	ps, err := parseCurrentSession()
 	if err != nil {
-		return "", fmt.Errorf("failed to parse session %s: %w", chosen.Path, err)
-	}
-	if ps.CWD == "" {
-		ps.CWD = chosen.CWD
+		return "", err
 	}
 	savePath, savedName, err := saveSessionToBatonStore(ps, name)
 	if err != nil {
@@ -589,7 +647,7 @@ func nameSession(name, agent, query string) (string, error) {
 		note = fmt.Sprintf("\n\n> The name **%s** is already used by another saved session, so this one was saved as **%s**.", name, savedName)
 	}
 	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)%s\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
-		savedName, ps.Agent, filepath.Base(chosen.Path), filepath.Base(savePath), note, savedName, savedName), nil
+		savedName, ps.Agent, filepath.Base(ps.SourceFile), filepath.Base(savePath), note, savedName, savedName), nil
 }
 
 func parseCandidateIndex(q string, total int) (int, bool) {
@@ -622,6 +680,7 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 	sb.WriteString("- Latest saved session: `baton load`\n")
 	sb.WriteString("- By candidate number: `baton load 1`\n")
 	sb.WriteString("- By session name: `baton load <name>`\n")
+	sb.WriteString("- By session ID: `baton load <id>`\n")
 	sb.WriteString("- Session not saved before the agent ran out of context/quota: `baton import`\n")
 	return sb.String()
 }
@@ -632,8 +691,8 @@ func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
 		if title == "" {
 			title = "(unnamed)"
 		}
-		sb.WriteString(fmt.Sprintf("**#%d** [%s] **%s** — `%s` (%s)\n",
-			i+1, c.Agent, title, filepath.Base(c.Path), c.ModTime.Format("2006-01-02 15:04:05")))
+		sb.WriteString(fmt.Sprintf("#%d  %s  [%s] %s  · id %s\n",
+			i+1, c.ModTime.Format("2006-01-02 15:04"), c.Agent, title, shortSessionID(c.SessionID())))
 		if c.CWD != "" {
 			sb.WriteString(fmt.Sprintf("   Workdir: `%s`\n", c.CWD))
 		}
@@ -697,52 +756,90 @@ func formatImportListReport(unmatchedQuery string, candidates []SessionCandidate
 	sb.WriteString("\n**How to import a session into baton and load it:**\n")
 	sb.WriteString("- By candidate number: `baton import 1`\n")
 	sb.WriteString("- By session name: `baton import <name>`\n")
+	sb.WriteString("- By session ID: `baton import <id>`\n")
+	sb.WriteString("- Under another name: `baton import 1 as <name>`; without loading: add `--no-load`\n")
 	return sb.String()
 }
 
-// importSession implements `baton import [#|name]`: with no query it lists raw
-// sessions of all agents; with a candidate number or session name from that list
-// it saves the session into Baton's saved store and immediately loads it.
-func importSession(query string) (string, error) {
+// parseImportArgs splits `baton import` arguments into the session query,
+// the optional `as <name>` and the `--no-load` flag.
+func parseImportArgs(args []string) (query, asName string, noLoad bool) {
+	var q, as []string
+	inAs := false
+	for _, a := range args {
+		switch {
+		case a == "--no-load":
+			noLoad = true
+		case strings.EqualFold(a, "as") && !inAs && len(q) > 0:
+			inAs = true
+		case inAs:
+			as = append(as, a)
+		default:
+			q = append(q, a)
+		}
+	}
+	return strings.Join(q, " "), strings.Join(as, " "), noLoad
+}
+
+// findImportCandidate picks a session from the `baton import` list by number,
+// exact name, ID prefix, or a name fragment that matches only one session.
+func findImportCandidate(candidates []SessionCandidate, query string) (SessionCandidate, bool) {
+	if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
+		return candidates[idx], true
+	}
+	for _, c := range candidates {
+		if c.Title != "" && strings.EqualFold(c.Title, query) {
+			return c, true
+		}
+	}
+	if c, ok := findCandidateByID(candidates, query); ok {
+		return c, true
+	}
+	qLower := strings.ToLower(query)
+	var found []SessionCandidate
+	for _, c := range candidates {
+		if c.Title != "" && strings.Contains(strings.ToLower(c.Title), qLower) {
+			found = append(found, c)
+		}
+	}
+	if len(found) == 1 {
+		return found[0], true
+	}
+	return SessionCandidate{}, false
+}
+
+// importSession implements `baton import [#|name|id] [as <name>] [--no-load]`:
+// with no query it lists raw sessions of all agents; with a number, name, or ID
+// from that list it saves the session into Baton's saved store and loads it
+// (unless --no-load is given). Unknown queries return the list, never another session.
+func importSession(args []string) (string, error) {
 	cleanupOldHandoffs()
-	query = strings.TrimSpace(query)
+	query, asName, noLoad := parseImportArgs(args)
 	candidates := discoverImportCandidates()
 	if query == "" || strings.EqualFold(query, "list") || query == "?" {
 		return formatImportListReport("", candidates), nil
 	}
 
-	var chosen *SessionCandidate
-	if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
-		chosen = &candidates[idx]
-	}
-	for i := range candidates {
-		if chosen == nil && candidates[i].Title != "" && strings.EqualFold(candidates[i].Title, query) {
-			chosen = &candidates[i]
-		}
-	}
-	qLower := strings.ToLower(query)
-	for i := range candidates {
-		if chosen == nil && candidates[i].Title != "" && strings.Contains(strings.ToLower(candidates[i].Title), qLower) {
-			chosen = &candidates[i]
-		}
-	}
-	if chosen == nil {
+	chosen, ok := findImportCandidate(candidates, query)
+	if !ok {
 		return formatImportListReport(query, candidates), nil
 	}
 
-	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse session %s: %w", chosen.Path, err)
-	}
-	if ps.Title == "" {
-		ps.Title = chosen.Title
-	}
-	if ps.CWD == "" {
-		ps.CWD = chosen.CWD
-	}
-	savePath, _, err := saveSessionToBatonStore(ps, "")
+	ps, err := parseCandidate(chosen)
 	if err != nil {
 		return "", err
+	}
+	savePath, savedName, err := saveSessionToBatonStore(ps, asName)
+	if err != nil {
+		return "", err
+	}
+	imported := fmt.Sprintf("Imported [%s] session %s into baton as **%s** (`%s`).",
+		chosen.Agent, shortSessionID(chosen.SessionID()), savedName, filepath.Base(savePath))
+	if asName != "" && savedName != asName {
+		imported += fmt.Sprintf(" The name **%s** is already used by another saved session.", asName)
+	}
+	if noLoad {
+		return imported + fmt.Sprintf(" Load it with `baton load %s`.", savedName), nil
 	}
 	saved, err := parseSessionFile(ps.Agent, savePath, time.Now())
 	if err != nil {
@@ -752,9 +849,7 @@ func importSession(query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Imported [%s] `%s` into baton as **%s** (`%s`).\n\n",
-		chosen.Agent, filepath.Base(chosen.Path), saved.Title, filepath.Base(savePath)) +
-		formatHandoffSummary(saved, handoffDir, nil), nil
+	return imported + "\n\n" + formatHandoffSummary(saved, handoffDir, nil), nil
 }
 
 func listSessionsReport(agent, query string) string {
@@ -820,128 +915,43 @@ func getSessionTurnDetails(sessionID string, turnID int) (string, error) {
 	return "", fmt.Errorf("turn #%d not found in session %s", turnID, sessionID)
 }
 
+// findAndParseSession finds a session in Baton's saved store by number, name, or ID.
 func findAndParseSession(agent, query string) (*ParsedSession, error) {
-	return findAndParseSessionForAction(agent, query, false)
-}
-
-func findAndParseSessionForAction(agent, query string, forSaveOrPush bool) (*ParsedSession, error) {
 	if query == "" {
 		query = "latest"
 	}
-	if !forSaveOrPush {
-		savedCandidates := discoverSavedBatonSessions(agent, "")
-		if len(savedCandidates) == 0 {
-			return nil, fmt.Errorf("no saved Baton sessions found (run 'baton save [name]' or 'baton push [name]' in the source agent first)")
-		}
-		if idx, ok := parseCandidateIndex(query, len(savedCandidates)); ok {
-			chosen := savedCandidates[idx]
-			return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		}
-		if strings.EqualFold(query, "latest") {
-			chosen := savedCandidates[0]
-			return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		}
-		qLower := strings.ToLower(query)
-		for _, c := range savedCandidates {
-			if c.Title != "" && strings.EqualFold(c.Title, query) {
-				return parseSessionFile(c.Agent, c.Path, c.ModTime)
-			}
-		}
-		for _, c := range savedCandidates {
-			if c.Title != "" && strings.Contains(strings.ToLower(c.Title), qLower) {
-				return parseSessionFile(c.Agent, c.Path, c.ModTime)
-			}
-		}
-		filteredSaved := discoverSavedBatonSessions(agent, query)
-		if len(filteredSaved) > 0 {
-			chosen := filteredSaved[0]
-			return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		}
-		return nil, fmt.Errorf("no saved Baton session matching '%s'", query)
+	savedCandidates := discoverSavedBatonSessions(agent, "")
+	if len(savedCandidates) == 0 {
+		return nil, fmt.Errorf("no saved Baton sessions found (run 'baton save [name]' or 'baton push [name]' in the source agent first)")
 	}
-
-	allCandidates := discoverSessions(agent, "")
-	if len(allCandidates) == 0 {
-		return nil, fmt.Errorf("no sessions found for agent '%s'", agent)
+	if idx, ok := parseCandidateIndex(query, len(savedCandidates)); ok {
+		chosen := savedCandidates[idx]
+		return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
 	}
-
-	// 1. Check if query is a candidate number ("1", "2", "#1", etc.)
-	if idx, ok := parseCandidateIndex(query, len(allCandidates)); ok {
-		chosen := allCandidates[idx]
-		ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		if err == nil {
-			if ps.Title == "" {
-				ps.Title = chosen.Title
-			}
-			if ps.CWD == "" {
-				ps.CWD = chosen.CWD
-			}
-		}
-		return ps, err
-	}
-
-	// 2. Check if query is "latest"
 	if strings.EqualFold(query, "latest") {
-		chosen := selectCurrentSessionCandidate(agent, allCandidates)
-		ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		if err == nil {
-			if ps.Title == "" {
-				ps.Title = chosen.Title
-			}
-			if ps.CWD == "" {
-				ps.CWD = chosen.CWD
-			}
-		}
-		return ps, err
+		chosen := savedCandidates[0]
+		return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
 	}
-
-	// 3. Exact or substring match on session Title / Alias first
 	qLower := strings.ToLower(query)
-	for _, c := range allCandidates {
+	for _, c := range savedCandidates {
 		if c.Title != "" && strings.EqualFold(c.Title, query) {
-			ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime)
-			if err == nil {
-				if ps.Title == "" {
-					ps.Title = c.Title
-				}
-				if ps.CWD == "" {
-					ps.CWD = c.CWD
-				}
-			}
-			return ps, err
+			return parseSessionFile(c.Agent, c.Path, c.ModTime)
 		}
 	}
-	for _, c := range allCandidates {
+	if c, ok := findCandidateByID(savedCandidates, query); ok {
+		return parseSessionFile(c.Agent, c.Path, c.ModTime)
+	}
+	for _, c := range savedCandidates {
 		if c.Title != "" && strings.Contains(strings.ToLower(c.Title), qLower) {
-			ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime)
-			if err == nil {
-				if ps.Title == "" {
-					ps.Title = c.Title
-				}
-				if ps.CWD == "" {
-					ps.CWD = c.CWD
-				}
-			}
-			return ps, err
+			return parseSessionFile(c.Agent, c.Path, c.ModTime)
 		}
 	}
-
-	// 4. Content / filename search
-	candidates := discoverSessions(agent, query)
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no sessions found for agent '%s' matching '%s'", agent, query)
+	filteredSaved := discoverSavedBatonSessions(agent, query)
+	if len(filteredSaved) > 0 {
+		chosen := filteredSaved[0]
+		return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
 	}
-	chosen := candidates[0]
-	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-	if err == nil {
-		if ps.Title == "" {
-			ps.Title = chosen.Title
-		}
-		if ps.CWD == "" {
-			ps.CWD = chosen.CWD
-		}
-	}
-	return ps, err
+	return nil, fmt.Errorf("no saved Baton session matching '%s'", query)
 }
 
 func loadAgyWorkspaces(agyRoot string) map[string]string {

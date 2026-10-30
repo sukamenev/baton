@@ -3,36 +3,46 @@ name: baton
 description: >-
   Lossless session handoff across CLI coding agents (claude, codex, agy, pi, hermes)
   and client-side encrypted session + workspace transfer between machines. Activate
-  this skill whenever the user asks in plain words to continue/load/resume a session
+  this skill whenever the user asks in plain words, in any language, to continue/load/resume a session
   (by name, from another agent, or the latest session), name a session, list recent
   sessions, send/push a session to another computer, or load a baton:... token.
 ---
 
 # Baton Skill: Cross-Agent & Cross-Machine Session Handoff
 
-When the user asks in plain language (Russian, English, or any language) to continue or transfer a session, run the corresponding `baton` command via your shell tool (Note for Codex CLI: run `baton` normally first; if a remote `baton load <URL>` or `baton push` fails due to sandbox network restrictions and permission escalation is rejected by policy, tell the user to run `!baton load "<URL>"` directly in the Codex prompt with a leading exclamation mark `!` — which downloads and saves the session into the local index — and then type `baton load`; or `!baton push` to upload):
+When the user asks to continue, list, save, import, or transfer a session, run the corresponding `baton` command via your shell tool.
+
+The user may write in any language. The phrases in the table below are English examples: match the user's request by meaning, not by wording, and if it means the same as a row, run that row's command.
 
 | What the user says (examples) | Command to run |
 |---|---|
-| "Load/continue the latest session" / "Загрузи последнюю сессию" | `baton load` |
-| "Load session auth-refactor" / "Загрузи сессию auth-refactor" | `baton load auth-refactor` |
-| "Load session from claude" / "Загрузи сессию от claude" | `baton load claude` |
-| "Load session auth-refactor from claude" | `baton load claude auth-refactor` |
-| "Show recent sessions" / "Какие есть сессии?" (or user forgot the name) | `baton list` |
-| "Load candidate #1" / "Загрузи первую сессию" | `baton load 1` |
-| "Save/name this session" / "Сохрани текущую сессию" | `baton save` |
-| "Save/name this session auth-refactor" / "Сохрани сессию auth-refactor" | `baton save auth-refactor` |
-| "Push/send this session for my laptop" / "Отправь сессию на другой компьютер" | `baton push` |
-| "Load remote session https://...#key or baton:..." / "Загрузи сессию по ссылке/токену" | `baton load <URL\|token>` |
-| "Delete saved session auth-refactor" / "Удали сохранённую сессию auth-refactor" | `baton rm auth-refactor` (or `baton rm <#>` with the number from `baton list`) |
-| "Clear/delete all saved sessions" / "Очисти/удали все сохранённые сессии" | `baton clear` |
-| "The session was not saved (context/quota ran out), take one of the existing sessions" / "Импортируй сессию" / "Возьми сессию из существующих" | `baton import` |
-| "Import session #2" / "Импортируй вторую сессию" / "Импортируй сессию auth-refactor" | `baton import 2` / `baton import auth-refactor` |
+| "Load/continue the latest session" | `baton load` |
+| "Load session my_session" | `baton load my_session` |
+| "Load session from claude" | `baton load claude` |
+| "Load session my_session from claude" | `baton load claude my_session` |
+| "Show recent/saved sessions" (or the user forgot the name) | `baton list` |
+| "Load session #1" / "Load the first session" | `baton load 1` |
+| "Load session 726d401d" (a session ID from the list) | `baton load 726d401d` |
+| "Save/name this session" | `baton save` |
+| "Save this session as my_session" | `baton save my_session` |
+| "Push/send this session to my laptop" | `baton push` |
+| "Load remote session https://...#key or baton:..." | `baton load <URL\|token>` |
+| "Delete saved session my_session" | `baton rm my_session` (or `baton rm <#>` with the number from `baton list`) |
+| "Clear/delete all saved sessions" | `baton clear` |
+| "Update baton" | `baton update` |
+| "The session was not saved (context/quota ran out), take one of the existing sessions" | `baton import` |
+| "Import session #2" / "Import session my_session" / "Import session 726d401d" | `baton import 2` / `baton import my_session` / `baton import 726d401d` |
+| "Save/name session #7 as my_session" (a session other than the current one) | `baton import 7 as my_session` |
+| "Import session #3 as my_session without loading it" | `baton import 3 as my_session --no-load` |
+
+`baton save` works only with the current session. Never pass it a number or another session; use `baton import <#|id> as <name>` instead.
+
+Note for Codex CLI: if a remote `baton load <URL>` or `baton push` fails due to sandbox network restrictions and permission escalation is rejected by policy, tell the user to run `!baton load "<URL>"` (or `!baton push`) directly in the Codex prompt with a leading exclamation mark `!`, and then type `baton load`.
 
 ## Rules After Running `baton list`, `baton load`, or `baton import`
 
 1. **If `baton` returned a numbered candidate list (`#1`, `#2`, ...):**
-   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Reproduce **every** entry exactly as printed: number, agent, name, file, time, working directory, and preview. Do not summarize, regroup, merge, or collapse entries (never write things like "#7–#15: older sessions"), do not drop previews, and do not add your own commentary between entries.
+   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Reproduce **every** entry exactly as printed: number, time, agent, name, session ID, working directory, and preview. Do not summarize, regroup, merge, or collapse entries (never write things like "#7–#15: older sessions"), do not drop previews, and do not add your own commentary between entries.
    - Then ask the user which number or name to load/import, and wait for the answer. Do not pick a session yourself after `baton list` or `baton import`; only after a `baton load` fallback list, if #1 clearly matches the current project directory, you may run `baton load 1` directly.
    - If `baton load` reports that there are no saved sessions (or none of them is the one the user wants), run `baton import` to list raw sessions of all agents and let the user pick one. `baton import <#|name>` saves the chosen session into baton and loads it in one step.
 2. **Check `Handoff Status` at the bottom of the `baton load` output:**

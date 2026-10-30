@@ -276,7 +276,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	sFile := filepath.Join(sessDir, "2026-10-30_s1.jsonl")
+	sFile := filepath.Join(sessDir, "2026-10-30T12-00-00-000Z_0b4c9d2e-1f3a-4b5c-8d6e-7f8a9b0c1d2e.jsonl")
 	content := `{"type":"session","version":3,"id":"s1","cwd":"/tmp"}` + "\n" +
 		`{"type":"session_info","id":"i1","name":"billing-fix"}` + "\n" +
 		`{"type":"message","id":"m1","parentId":"i1","message":{"role":"user","content":[{"type":"text","text":"Fix invoice rounding"}]}}` + "\n"
@@ -285,7 +285,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	}
 
 	// 0. Save session into Baton's saved sessions store (`baton save billing-fix`)
-	saveMsg, err := nameSession("billing-fix", "pi", "")
+	saveMsg, err := nameSession("billing-fix")
 	if err != nil || !strings.Contains(saveMsg, "billing-fix") {
 		t.Fatalf("expected nameSession to save session, err=%v, msg=%s", err, saveMsg)
 	}
@@ -298,7 +298,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 
 	// 2. When user forgot the session name or gave an unknown name, return numbered candidate list
 	reportCandidates, err := loadSessionContext("pi", "unknown-session-name")
-	if err != nil || !strings.Contains(reportCandidates, "**#1**") || !strings.Contains(reportCandidates, "billing-fix") {
+	if err != nil || !strings.Contains(reportCandidates, "#1  ") || !strings.Contains(reportCandidates, "· id 0b4c9d2e") || !strings.Contains(reportCandidates, "billing-fix") {
 		t.Fatalf("expected numbered candidate list fallback, err=%v, report=%s", err, reportCandidates)
 	}
 
@@ -306,6 +306,12 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	reportByNum, err := loadSessionContext("pi", "1")
 	if err != nil || !strings.Contains(reportByNum, "Fix invoice rounding") {
 		t.Fatalf("expected candidate #1 load to succeed, err=%v, report=%s", err, reportByNum)
+	}
+
+	// 3a. Load by session ID prefix shown in the list
+	reportByID, err := loadSessionContext("pi", "0b4c9d2e")
+	if err != nil || !strings.Contains(reportByID, "Fix invoice rounding") {
+		t.Fatalf("expected load by session ID to succeed, err=%v, report=%s", err, reportByID)
 	}
 
 	// 4. Clear all saved Baton sessions (`baton clear`)
@@ -319,16 +325,16 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	}
 
 	// 5. Import a raw agent session that was never saved (`baton import`, `baton import 1`)
-	importList, err := importSession("")
-	if err != nil || !strings.Contains(importList, "**#1**") || !strings.Contains(importList, "billing-fix") {
+	importList, err := importSession(nil)
+	if err != nil || !strings.Contains(importList, "#1  ") || !strings.Contains(importList, "· id 0b4c9d2e") || !strings.Contains(importList, "billing-fix") {
 		t.Fatalf("expected numbered raw session list from importSession, err=%v, report=%s", err, importList)
 	}
-	if unmatched, err := importSession("claude"); err != nil || !strings.Contains(unmatched, "No agent session matched") {
+	if unmatched, err := importSession([]string{"claude"}); err != nil || !strings.Contains(unmatched, "No agent session matched") {
 		t.Fatalf("expected unmatched import name to return the list, err=%v, report=%s", err, unmatched)
 	}
-	importReport, err := importSession("1")
+	importReport, err := importSession([]string{"0b4c9d2e"})
 	if err != nil || !strings.Contains(importReport, "Imported [pi]") || !strings.Contains(importReport, "Fix invoice rounding") {
-		t.Fatalf("expected importSession to import and load raw session #1, err=%v, report=%s", err, importReport)
+		t.Fatalf("expected importSession to import and load raw session by ID, err=%v, report=%s", err, importReport)
 	}
 	if listAfterImport := listSessionsReport("", ""); !strings.Contains(listAfterImport, "billing-fix") {
 		t.Fatalf("expected imported session in saved list, got: %s", listAfterImport)
@@ -336,6 +342,54 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	reportImportedByName, err := loadSessionContext("", "billing-fix")
 	if err != nil || !strings.Contains(reportImportedByName, "Fix invoice rounding") {
 		t.Fatalf("expected imported session to load by name, err=%v, report=%s", err, reportImportedByName)
+	}
+
+	// 6. Import under another name without loading (`baton import 1 as invoices --no-load`)
+	noLoad, err := importSession([]string{"1", "as", "invoices", "--no-load"})
+	if err != nil || !strings.Contains(noLoad, "as **invoices**") || strings.Contains(noLoad, "Fix invoice rounding") {
+		t.Fatalf("expected --no-load import to save under the new name without loading, err=%v, report=%s", err, noLoad)
+	}
+	if report, err := loadSessionContext("", "invoices"); err != nil || !strings.Contains(report, "Fix invoice rounding") {
+		t.Fatalf("expected session imported as invoices to load, err=%v, report=%s", err, report)
+	}
+
+	// 7. An unknown number never falls back to another session
+	if report, err := importSession([]string{"99999", "as", "x"}); err != nil || !strings.Contains(report, "No agent session matched") {
+		t.Fatalf("expected unknown import number to return the list, err=%v, report=%s", err, report)
+	}
+}
+
+func TestImportAndSaveArgs(t *testing.T) {
+	q, as, noLoad := parseImportArgs([]string{"Подтверди", "присутствие", "as", "my", "name", "--no-load"})
+	if q != "Подтверди присутствие" || as != "my name" || !noLoad {
+		t.Fatalf("parseImportArgs: got q=%q as=%q noLoad=%v", q, as, noLoad)
+	}
+	if q, as, _ := parseImportArgs([]string{"as"}); q != "as" || as != "" {
+		t.Fatalf("a lone 'as' must be a query, got q=%q as=%q", q, as)
+	}
+
+	if saveArgsError(nil) != "" || saveArgsError([]string{"auth-refactor"}) != "" {
+		t.Fatal("baton save [name] must stay valid")
+	}
+	if msg := saveArgsError([]string{"7"}); !strings.Contains(msg, "baton import 7") {
+		t.Fatalf("baton save 7 must point to baton import, got %q", msg)
+	}
+	if msg := saveArgsError([]string{"auth", "7"}); !strings.Contains(msg, "baton import <#|id> as auth") {
+		t.Fatalf("baton save <name> <#> must point to baton import ... as, got %q", msg)
+	}
+
+	candidates := []SessionCandidate{
+		{Agent: "claude", Path: "/x/0b4c9d2e-1f3a-4b5c-8d6e-7f8a9b0c1d2e.jsonl", Title: "billing-fix"},
+		{Agent: "claude", Path: "/x/1c5d0e3f-1f3a-4b5c-8d6e-7f8a9b0c1d2e.jsonl", Title: "billing-report"},
+	}
+	if _, ok := findImportCandidate(candidates, "billing"); ok {
+		t.Fatal("an ambiguous name fragment must not pick a session")
+	}
+	if c, ok := findImportCandidate(candidates, "report"); !ok || c.Title != "billing-report" {
+		t.Fatal("a unique name fragment must pick its session")
+	}
+	if c, ok := findImportCandidate(candidates, "1c5d0e3f"); !ok || c.Title != "billing-report" {
+		t.Fatal("an ID prefix must pick its session")
 	}
 }
 
