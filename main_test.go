@@ -298,7 +298,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 
 	// 2. When user forgot the session name or gave an unknown name, return numbered candidate list
 	reportCandidates, err := loadSessionContext("pi", "unknown-session-name")
-	if err != nil || !strings.Contains(reportCandidates, "#1  ") || !strings.Contains(reportCandidates, "· id 0b4c9d2e") || !strings.Contains(reportCandidates, "billing-fix") {
+	if err != nil || !strings.Contains(reportCandidates, "**#1**") || !strings.Contains(reportCandidates, "· id 0b4c9d2e") || !strings.Contains(reportCandidates, "billing-fix") {
 		t.Fatalf("expected numbered candidate list fallback, err=%v, report=%s", err, reportCandidates)
 	}
 
@@ -326,7 +326,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 
 	// 5. Import a raw agent session that was never saved (`baton import`, `baton import 1`)
 	importList, err := importSession(nil)
-	if err != nil || !strings.Contains(importList, "#1  ") || !strings.Contains(importList, "· id 0b4c9d2e") || !strings.Contains(importList, "billing-fix") {
+	if err != nil || !strings.Contains(importList, "**#1**") || !strings.Contains(importList, "· id 0b4c9d2e") || !strings.Contains(importList, "billing-fix") {
 		t.Fatalf("expected numbered raw session list from importSession, err=%v, report=%s", err, importList)
 	}
 	if unmatched, err := importSession([]string{"claude"}); err != nil || !strings.Contains(unmatched, "No agent session matched") {
@@ -356,6 +356,22 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	// 7. An unknown number never falls back to another session
 	if report, err := importSession([]string{"99999", "as", "x"}); err != nil || !strings.Contains(report, "No agent session matched") {
 		t.Fatalf("expected unknown import number to return the list, err=%v, report=%s", err, report)
+	}
+}
+
+func TestDisplayPath(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	for in, want := range map[string]string{
+		"/home/u/proj/x": "~/proj/x",
+		"/home/u":        "~",
+		"/home/user2/x":  "/home/user2/x",
+		"/home/u..x":     "/home/u..x",
+		"/tmp":           "/tmp",
+		"":               "",
+	} {
+		if got := displayPath(in); got != want {
+			t.Errorf("displayPath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

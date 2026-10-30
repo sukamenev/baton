@@ -147,7 +147,7 @@ baton import 7 as my_session
 
 The chosen session is saved into baton and loaded right away; afterwards it appears in `baton list`. If you renamed the session in the agent itself, that name is shown in the list and used when saving.
 
-Each list row looks like `#1  2026-10-31 00:37  [claude] my_session  · id 726d401d`. The ID is the agent's own session ID (first 8 characters of the UUID; the full ID for Hermes) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
+Each list row looks like **#1** 2026-10-31 00:37 [claude] **my_session** · id 726d401d, with the folder and the last prompt below it. The ID is the agent's own session ID (first 8 characters of the UUID; the full ID for Hermes) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
 
 `baton save` always saves the current session; to save any other session under a name, use `baton import <#|id> as <name>`.
 

@@ -685,25 +685,46 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 	return sb.String()
 }
 
-// writeCandidateRows prints the list inside a code block: Markdown renderers in
-// the agents would otherwise strip the indentation that sets rows apart.
+// displayPath shortens a path inside the user's home directory to ~/... (~\... on
+// Windows, where filepath.Rel compares paths case-insensitively).
+func displayPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || p == "" {
+		return p
+	}
+	rel, err := filepath.Rel(home, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p
+	}
+	if rel == "." {
+		return "~"
+	}
+	return "~" + string(filepath.Separator) + rel
+}
+
+// listIndent indents the folder and prompt lines under each row. Markdown strips
+// leading spaces but keeps no-break spaces, so the list stays a ladder without bullets.
+const listIndent = "\u00a0\u00a0\u00a0\u00a0"
+
+// writeCandidateRows prints the list as one Markdown paragraph with hard line
+// breaks (two trailing spaces), so agents render it line by line.
 func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
-	sb.WriteString("```text\n")
 	for i, c := range candidates {
 		title := c.Title
 		if title == "" {
 			title = "(unnamed)"
 		}
-		sb.WriteString(fmt.Sprintf("#%d  %s  [%s] %s  · id %s\n",
+		sb.WriteString(fmt.Sprintf("**#%d** %s [%s] **%s** · id %s  \n",
 			i+1, c.ModTime.Format("2006-01-02 15:04"), c.Agent, title, shortSessionID(c.SessionID())))
 		if c.CWD != "" {
-			sb.WriteString(fmt.Sprintf("    %s\n", c.CWD))
+			sb.WriteString(fmt.Sprintf("%s`%s`  \n", listIndent, displayPath(c.CWD)))
 		}
 		if c.Preview != "" {
-			sb.WriteString(fmt.Sprintf("    %s\n", c.Preview))
+			// Escape asterisks so they don't break the italics; names stay as is
+			// because agents copy them into `baton load <name>`.
+			sb.WriteString(fmt.Sprintf("%s*%s*  \n", listIndent, strings.ReplaceAll(c.Preview, "*", "\\*")))
 		}
 	}
-	sb.WriteString("```\n")
 }
 
 // --- `baton import`: pick a raw agent session that was never saved with `baton save` ---
