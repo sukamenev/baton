@@ -270,6 +270,8 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmp, "claude"))
 	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex"))
 	t.Setenv("HERMES_HOME", filepath.Join(tmp, "hermes"))
+	// clearSavedSessions removes os.TempDir()/baton-handoff — keep it away from the real /tmp
+	t.Setenv("TMPDIR", filepath.Join(tmp, "tmp"))
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		t.Fatal(err)
@@ -334,5 +336,32 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	reportImportedByName, err := loadSessionContext("", "billing-fix")
 	if err != nil || !strings.Contains(reportImportedByName, "Fix invoice rounding") {
 		t.Fatalf("expected imported session to load by name, err=%v, report=%s", err, reportImportedByName)
+	}
+}
+
+func TestSavedSessionNameCollision(t *testing.T) {
+	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	first :=&ParsedSession{Agent: "claude", SessionID: "claude-aaa", PostCompact: []SessionTurn{{Role: "user", Text: "First"}}}
+	second := &ParsedSession{Agent: "codex", SessionID: "codex-bbb", PostCompact: []SessionTurn{{Role: "user", Text: "Second"}}}
+
+	p1, n1, err := saveSessionToBatonStore(first, "BookTrans")
+	if err != nil || n1 != "BookTrans" {
+		t.Fatalf("first save: name=%q err=%v", n1, err)
+	}
+	// A different session under the same name must not overwrite the first one
+	p2, n2, err := saveSessionToBatonStore(second, "BookTrans")
+	if err != nil || n2 != "BookTrans-2" || p2 == p1 {
+		t.Fatalf("expected BookTrans-2 for a different session, got name=%q path=%q err=%v", n2, p2, err)
+	}
+	// Re-saving an already saved session updates its own file in place
+	if p, n, err := saveSessionToBatonStore(second, "BookTrans"); err != nil || n != "BookTrans-2" || p != p2 {
+		t.Fatalf("expected re-save to reuse BookTrans-2, got name=%q path=%q err=%v", n, p, err)
+	}
+	if p, n, err := saveSessionToBatonStore(first, "BookTrans"); err != nil || n != "BookTrans" || p != p1 {
+		t.Fatalf("expected re-save to reuse BookTrans, got name=%q path=%q err=%v", n, p, err)
+	}
+	if report, err := loadSessionContext("", "BookTrans-2"); err != nil || !strings.Contains(report, "Second") {
+		t.Fatalf("expected BookTrans-2 to load the second session, err=%v report=%s", err, report)
 	}
 }

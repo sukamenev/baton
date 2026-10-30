@@ -92,7 +92,7 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 	if saveName == "" && cwd != "" {
 		saveName = filepath.Base(cwd)
 	}
-	_, _ = saveSessionToBatonStore(ps, saveName)
+	_, _, _ = saveSessionToBatonStore(ps, saveName)
 
 	files := collectModifiedWorkspaceFiles(cwd, ps.ModifiedFiles)
 	projectRules := collectProjectRuleFiles(cwd)
@@ -206,7 +206,7 @@ func saveImportedSessionToLocalIndex(ps *ParsedSession) {
 	if title == "" || title == "." || title == "/" {
 		title = filepath.Base(ps.SessionID)
 	}
-	_, _ = saveSessionToBatonStore(ps, title)
+	_, _, _ = saveSessionToBatonStore(ps, title)
 }
 
 func pullRemoteSession(token string) (string, error) {

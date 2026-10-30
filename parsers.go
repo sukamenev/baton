@@ -161,13 +161,40 @@ func sanitizeSessionFileName(name string) string {
 	return safe
 }
 
-func saveSessionToBatonStore(ps *ParsedSession, name string) (string, error) {
+// savedSessionPath picks the store file for a session saved under name. A file that
+// already holds a different session is never overwritten: the name gets a numeric
+// suffix instead (BookTrans-2, BookTrans-3, ...). Re-saving the same session
+// (same session_id) updates its existing file in place.
+func savedSessionPath(dir, name, sessionID string) (string, string) {
+	for n := 1; ; n++ {
+		candidate := name
+		if n > 1 {
+			candidate = fmt.Sprintf("%s-%d", name, n)
+		}
+		path := filepath.Join(dir, sanitizeSessionFileName(candidate)+".baton.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return path, candidate
+		}
+		var existing struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal(data, &existing) != nil || existing.SessionID == "" || existing.SessionID == sessionID {
+			return path, candidate
+		}
+	}
+}
+
+// saveSessionToBatonStore writes a session snapshot into Baton's saved store and
+// returns the file path and the final session name (which may carry a -N suffix
+// if another session already uses the requested name).
+func saveSessionToBatonStore(ps *ParsedSession, name string) (string, string, error) {
 	if ps == nil {
-		return "", fmt.Errorf("parsed session is nil")
+		return "", "", fmt.Errorf("parsed session is nil")
 	}
 	dir := savedSessionsDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
+		return "", "", err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -180,6 +207,8 @@ func saveSessionToBatonStore(ps *ParsedSession, name string) (string, error) {
 		name = ps.SessionID
 	}
 
+	savePath, name := savedSessionPath(dir, name, ps.SessionID)
+
 	cp := *ps
 	cp.Title = name
 	cp.ModTime = time.Now()
@@ -191,14 +220,12 @@ func saveSessionToBatonStore(ps *ParsedSession, name string) (string, error) {
 	// Keep only post-compaction active context in the saved snapshot so loading is instant
 	cp.AllTurns = cp.PostCompact
 
-	safeName := sanitizeSessionFileName(name)
-	savePath := filepath.Join(dir, safeName+".baton.json")
 	data, err := json.MarshalIndent(&cp, "", "  ")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := os.WriteFile(savePath, data, 0600); err != nil {
-		return "", err
+		return "", "", err
 	}
 	aliases := loadAliases()
 	aliases[savePath] = name
@@ -206,7 +233,7 @@ func saveSessionToBatonStore(ps *ParsedSession, name string) (string, error) {
 		aliases[ps.SourceFile] = name
 	}
 	_ = saveAliases(aliases)
-	return savePath, nil
+	return savePath, name, nil
 }
 
 func clearSavedSessions() (string, error) {
@@ -518,12 +545,16 @@ func nameSession(name, agent, query string) (string, error) {
 	if ps.CWD == "" {
 		ps.CWD = chosen.CWD
 	}
-	savePath, err := saveSessionToBatonStore(ps, name)
+	savePath, savedName, err := saveSessionToBatonStore(ps, name)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
-		name, ps.Agent, filepath.Base(chosen.Path), filepath.Base(savePath), name, name), nil
+	note := ""
+	if savedName != name {
+		note = fmt.Sprintf("\n\n> The name **%s** is already used by another saved session, so this one was saved as **%s**.", name, savedName)
+	}
+	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)%s\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
+		savedName, ps.Agent, filepath.Base(chosen.Path), filepath.Base(savePath), note, savedName, savedName), nil
 }
 
 func parseCandidateIndex(q string, total int) (int, bool) {
@@ -674,7 +705,7 @@ func importSession(query string) (string, error) {
 	if ps.CWD == "" {
 		ps.CWD = chosen.CWD
 	}
-	savePath, err := saveSessionToBatonStore(ps, "")
+	savePath, _, err := saveSessionToBatonStore(ps, "")
 	if err != nil {
 		return "", err
 	}

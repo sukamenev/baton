@@ -185,7 +185,7 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 
 | Command | Description |
 |---|---|
-| `baton save [alias] [agent]` | Saves a snapshot of the current active session into Baton's local saved store (`~/.config/baton/saved/`, defaulting to the current folder name if `alias` is omitted) and prints a self-bootstrapping handoff prompt. |
+| `baton save [alias] [agent]` | Saves a snapshot of the current active session into Baton's local saved store (`~/.config/baton/saved/`, defaulting to the current folder name if `alias` is omitted) and prints a self-bootstrapping handoff prompt. If another saved session already uses the name, the new one is saved as `alias-2`, `alias-3`, ...; re-saving the same session updates it in place. |
 | `baton push [name]` | Saves the session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
 | `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
 | `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...) stored in `~/.config/baton/saved/`. |
