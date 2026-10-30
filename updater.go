@@ -37,6 +37,9 @@ func batonStateDir() string {
 }
 
 func batonConfigDir() string {
+	if env := os.Getenv("BATON_CONFIG_DIR"); env != "" {
+		return env
+	}
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
 		return filepath.Join(dir, "baton")
 	}

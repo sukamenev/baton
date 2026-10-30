@@ -69,6 +69,7 @@ func TestExtractUTF8StringsFromPB(t *testing.T) {
 }
 
 func TestEncryptDecryptAndBackupRoundtrip(t *testing.T) {
+	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
 	origSession := &ParsedSession{
 		Agent:          "claude",
 		SessionID:      "claude-test-1",

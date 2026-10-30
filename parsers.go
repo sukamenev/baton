@@ -172,6 +172,145 @@ func saveAliases(aliases map[string]string) error {
 	return os.WriteFile(path, b, 0644)
 }
 
+// detectCallerAgent identifies which CLI coding agent is currently executing baton
+// by inspecting agent-specific environment variables and the parent process tree.
+func detectCallerAgent() string {
+	if os.Getenv("CLAUDECODE") != "" || os.Getenv("CLAUDE_CODE_ENTRYPOINT") != "" {
+		return "claude"
+	}
+	if os.Getenv("CODEX_SANDBOX") != "" || os.Getenv("CODEX_THREAD_ID") != "" || os.Getenv("CODEX_CI") != "" {
+		return "codex"
+	}
+	if os.Getenv("PI_CODING_AGENT_DIR") != "" || os.Getenv("PI_SESSION_ID") != "" {
+		return "pi"
+	}
+	if os.Getenv("HERMES_SESSION_ID") != "" {
+		return "hermes"
+	}
+	if os.Getenv("ANTIGRAVITY_CLI") != "" {
+		return "agy"
+	}
+	// Check parent process tree on Linux/macOS if available
+	pid := os.Getppid()
+	for depth := 0; depth < 4 && pid > 1; depth++ {
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil {
+			break
+		}
+		lower := strings.ToLower(string(bytes.ReplaceAll(cmdline, []byte{0}, []byte{' '})))
+		switch {
+		case strings.Contains(lower, "claude"):
+			return "claude"
+		case strings.Contains(lower, "codex"):
+			return "codex"
+		case strings.Contains(lower, "antigravity") || strings.Contains(lower, "/agy"):
+			return "agy"
+		case strings.Contains(lower, "hermes"):
+			return "hermes"
+		}
+		statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			break
+		}
+		rparen := bytes.LastIndexByte(statData, ')')
+		if rparen < 0 || rparen+2 >= len(statData) {
+			break
+		}
+		fields := strings.Fields(string(statData[rparen+2:]))
+		if len(fields) < 2 {
+			break
+		}
+		nextPID, err := strconv.Atoi(fields[1])
+		if err != nil || nextPID <= 1 || nextPID == pid {
+			break
+		}
+		pid = nextPID
+	}
+	return ""
+}
+
+func cwdMatches(sessionCWD, currentCWD string) bool {
+	s := filepath.Clean(strings.TrimSpace(sessionCWD))
+	c := filepath.Clean(strings.TrimSpace(currentCWD))
+	if s == "" || s == "." || c == "" || c == "." {
+		return false
+	}
+	if strings.EqualFold(s, c) {
+		return true
+	}
+	return false
+}
+
+// isHandoffStubSession returns true if a session was started as a handoff-receiver
+// session (its first user prompt asks to load/list a baton session) and has not
+// modified any workspace files yet.
+func isHandoffStubSession(ps *ParsedSession) bool {
+	if ps == nil || ps.PreCompactTurns > 0 || len(ps.ModifiedFiles) > 0 || strings.TrimSpace(ps.CompactSummary) != "" {
+		return false
+	}
+	if strings.HasSuffix(ps.SourceFile, ".baton.json") {
+		return false
+	}
+	userTurns := 0
+	firstIsBaton := false
+	for _, t := range ps.PostCompact {
+		if t.Role == "user" {
+			userTurns++
+			if userTurns > 6 {
+				return false
+			}
+			if userTurns == 1 {
+				low := strings.ToLower(strings.TrimSpace(t.Text))
+				firstIsBaton = strings.Contains(low, "baton") ||
+					strings.Contains(low, "загрузи") ||
+					strings.Contains(low, "продолжи сессию") ||
+					strings.Contains(low, "восстанови сессию") ||
+					strings.Contains(low, "load session") ||
+					strings.Contains(low, "resume session") ||
+					strings.Contains(low, "continue session")
+			}
+		}
+	}
+	return userTurns > 0 && firstIsBaton
+}
+
+func selectCurrentSessionCandidate(agent string, candidates []SessionCandidate) SessionCandidate {
+	cwd, _ := os.Getwd()
+	if codexThread := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID")); codexThread != "" {
+		for _, c := range candidates {
+			if strings.Contains(filepath.Base(c.Path), codexThread) {
+				return c
+			}
+		}
+	}
+	caller := detectCallerAgent()
+	if (agent == "" || agent == "all" || agent == "auto") && caller != "" {
+		// First pass: non-stub session of caller agent in current working directory
+		for _, c := range candidates {
+			if c.Agent == caller && cwdMatches(c.CWD, cwd) {
+				if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil && !isHandoffStubSession(ps) {
+					return c
+				}
+			}
+		}
+		// Second pass: any session of caller agent in current working directory
+		for _, c := range candidates {
+			if c.Agent == caller && cwdMatches(c.CWD, cwd) {
+				return c
+			}
+		}
+	}
+	// Third pass: non-stub session of any agent in current working directory
+	for _, c := range candidates {
+		if cwdMatches(c.CWD, cwd) {
+			if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil && !isHandoffStubSession(ps) {
+				return c
+			}
+		}
+	}
+	return candidates[0]
+}
+
 func nameSession(name, agent, query string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -184,7 +323,7 @@ func nameSession(name, agent, query string) (string, error) {
 	if len(candidates) == 0 {
 		return "", fmt.Errorf("no local sessions found for agent '%s'", agent)
 	}
-	chosen := candidates[0]
+	chosen := selectCurrentSessionCandidate(agent, candidates)
 	if query != "latest" {
 		if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
 			chosen = candidates[idx]
@@ -321,6 +460,10 @@ func getSessionTurnDetails(sessionID string, turnID int) (string, error) {
 }
 
 func findAndParseSession(agent, query string) (*ParsedSession, error) {
+	return findAndParseSessionForAction(agent, query, false)
+}
+
+func findAndParseSessionForAction(agent, query string, forSaveOrPush bool) (*ParsedSession, error) {
 	if query == "" {
 		query = "latest"
 	}
@@ -333,20 +476,68 @@ func findAndParseSession(agent, query string) (*ParsedSession, error) {
 	if idx, ok := parseCandidateIndex(query, len(allCandidates)); ok {
 		chosen := allCandidates[idx]
 		ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		if err == nil && ps.Title == "" {
-			ps.Title = chosen.Title
+		if err == nil {
+			if ps.Title == "" {
+				ps.Title = chosen.Title
+			}
+			if ps.CWD == "" {
+				ps.CWD = chosen.CWD
+			}
 		}
 		return ps, err
 	}
 
 	// 2. Check if query is "latest"
 	if strings.EqualFold(query, "latest") {
-		chosen := allCandidates[0]
-		ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-		if err == nil && ps.Title == "" {
-			ps.Title = chosen.Title
+		if forSaveOrPush {
+			chosen := selectCurrentSessionCandidate(agent, allCandidates)
+			ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+			if err == nil {
+				if ps.Title == "" {
+					ps.Title = chosen.Title
+				}
+				if ps.CWD == "" {
+					ps.CWD = chosen.CWD
+				}
+			}
+			return ps, err
 		}
-		return ps, err
+		// For `baton load`: skip the currently running caller thread (if CODEX_THREAD_ID is set)
+		// and skip stub sessions that only contain a "baton load" request.
+		codexThread := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID"))
+		var firstParsed *ParsedSession
+		var firstErr error
+		for i, cand := range allCandidates {
+			if i > 12 {
+				break
+			}
+			if codexThread != "" && strings.Contains(filepath.Base(cand.Path), codexThread) {
+				continue
+			}
+			ps, err := parseSessionFile(cand.Agent, cand.Path, cand.ModTime)
+			if err != nil {
+				if firstParsed == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if ps.Title == "" {
+				ps.Title = cand.Title
+			}
+			if ps.CWD == "" {
+				ps.CWD = cand.CWD
+			}
+			if firstParsed == nil {
+				firstParsed = ps
+			}
+			if !isHandoffStubSession(ps) {
+				return ps, nil
+			}
+		}
+		if firstParsed != nil {
+			return firstParsed, nil
+		}
+		return nil, firstErr
 	}
 
 	// 3. Exact or substring match on session Title / Alias first
@@ -354,8 +545,13 @@ func findAndParseSession(agent, query string) (*ParsedSession, error) {
 	for _, c := range allCandidates {
 		if c.Title != "" && strings.EqualFold(c.Title, query) {
 			ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime)
-			if err == nil && ps.Title == "" {
-				ps.Title = c.Title
+			if err == nil {
+				if ps.Title == "" {
+					ps.Title = c.Title
+				}
+				if ps.CWD == "" {
+					ps.CWD = c.CWD
+				}
 			}
 			return ps, err
 		}
@@ -363,8 +559,13 @@ func findAndParseSession(agent, query string) (*ParsedSession, error) {
 	for _, c := range allCandidates {
 		if c.Title != "" && strings.Contains(strings.ToLower(c.Title), qLower) {
 			ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime)
-			if err == nil && ps.Title == "" {
-				ps.Title = c.Title
+			if err == nil {
+				if ps.Title == "" {
+					ps.Title = c.Title
+				}
+				if ps.CWD == "" {
+					ps.CWD = c.CWD
+				}
 			}
 			return ps, err
 		}
@@ -377,10 +578,38 @@ func findAndParseSession(agent, query string) (*ParsedSession, error) {
 	}
 	chosen := candidates[0]
 	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-	if err == nil && ps.Title == "" {
-		ps.Title = chosen.Title
+	if err == nil {
+		if ps.Title == "" {
+			ps.Title = chosen.Title
+		}
+		if ps.CWD == "" {
+			ps.CWD = chosen.CWD
+		}
 	}
 	return ps, err
+}
+
+func loadAgyWorkspaces(agyRoot string) map[string]string {
+	wsMap := make(map[string]string)
+	histPath := filepath.Join(agyRoot, "history.jsonl")
+	f, err := os.Open(histPath)
+	if err != nil {
+		return wsMap
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		var row map[string]interface{}
+		if json.Unmarshal(scanner.Bytes(), &row) == nil {
+			cid, _ := row["conversationId"].(string)
+			ws, _ := row["workspace"].(string)
+			if cid != "" && ws != "" {
+				wsMap[cid] = ws
+			}
+		}
+	}
+	return wsMap
 }
 
 func loadCodexThreadNames(codexRoot string) map[string]string {
@@ -503,16 +732,26 @@ func discoverSessions(agent, query string) []SessionCandidate {
 
 	if agent == "all" || agent == "agy" {
 		for _, agyRoot := range agyBaseDirs(home) {
+			agyWS := loadAgyWorkspaces(agyRoot)
 			brainLogs, _ := filepath.Glob(filepath.Join(agyRoot, "brain", "*", ".system_generated", "logs", "transcript_full.jsonl"))
 			if len(brainLogs) == 0 {
 				brainLogs, _ = filepath.Glob(filepath.Join(agyRoot, "brain", "*", ".system_generated", "logs", "transcript.jsonl"))
 			}
 			for _, m := range brainLogs {
-				addFile("agy", m, "", "")
+				ws := ""
+				parts := strings.Split(filepath.ToSlash(m), "/")
+				for idx, p := range parts {
+					if p == "brain" && idx+1 < len(parts) {
+						ws = agyWS[parts[idx+1]]
+						break
+					}
+				}
+				addFile("agy", m, "", ws)
 			}
 			pbFiles, _ := filepath.Glob(filepath.Join(agyRoot, "conversations", "*.pb"))
 			for _, m := range pbFiles {
-				addFile("agy", m, "", "")
+				cid := strings.TrimSuffix(filepath.Base(m), ".pb")
+				addFile("agy", m, "", agyWS[cid])
 			}
 		}
 	}
@@ -579,7 +818,7 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		return all[i].ModTime.After(all[j].ModTime)
 	})
 	if query == "" {
-		limit := 15
+		limit := 30
 		if len(all) < limit {
 			limit = len(all)
 		}
@@ -597,6 +836,16 @@ func discoverSessions(agent, query string) []SessionCandidate {
 				}
 			}
 		}
+		// Prioritize sessions belonging to the current working directory first,
+		// ordered by ModTime descending, followed by sessions from other directories.
+		sort.SliceStable(all, func(i, j int) bool {
+			matchI := cwdMatches(all[i].CWD, cwd)
+			matchJ := cwdMatches(all[j].CWD, cwd)
+			if matchI != matchJ {
+				return matchI
+			}
+			return all[i].ModTime.After(all[j].ModTime)
+		})
 	}
 	return all
 }
@@ -728,6 +977,18 @@ func candidateMatchesQuery(path, title, preview, query string) bool {
 func inspectSessionQuickMeta(agent, path string) (title, cwd, preview string) {
 	if strings.HasSuffix(path, ".pb") {
 		return "", "", "Protobuf binary snapshot"
+	}
+	if strings.HasSuffix(path, ".baton.json") {
+		if data, err := os.ReadFile(path); err == nil {
+			var imported struct {
+				Title string `json:"title"`
+				CWD   string `json:"cwd"`
+			}
+			if json.Unmarshal(data, &imported) == nil {
+				return imported.Title, imported.CWD, "Imported remote baton session"
+			}
+		}
+		return "", "", "Imported remote baton session"
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -878,6 +1139,9 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 		ps.PreCompactTurns = turnID
 		ps.CompactSummary = strings.TrimSpace(summary)
 		ps.PostCompact = nil
+		if len(ps.Commands) > 50 {
+			ps.Commands = ps.Commands[len(ps.Commands)-50:]
+		}
 	}
 
 	for scanner.Scan() {
@@ -1318,18 +1582,28 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 			pRole, _ := payload["role"].(string)
 			pContent := extractContentText(payload["content"])
 			if pType == "message" && pContent != "" {
+				if pRole == "developer" || pRole == "system" {
+					continue
+				}
+				trimmed := strings.TrimSpace(pContent)
+				if pRole == "user" && (strings.HasPrefix(trimmed, "<environment_context>") || strings.HasPrefix(trimmed, "<permissions instructions>") || strings.HasPrefix(trimmed, "<collaboration_mode>")) {
+					continue
+				}
 				if pRole == "" {
 					pRole = "assistant"
 				}
 				addTurn(SessionTurn{Role: pRole, Text: pContent})
 				continue
 			}
-			if pType == "function_call" || pType == "local_shell_call" {
+			if pType == "function_call" || pType == "local_shell_call" || pType == "custom_tool_call" {
 				name, _ := payload["name"].(string)
 				if name == "" {
 					name = pType
 				}
 				argsStr, _ := payload["arguments"].(string)
+				if argsStr == "" {
+					argsStr, _ = payload["input"].(string)
+				}
 				var argsMap map[string]interface{}
 				_ = json.Unmarshal([]byte(argsStr), &argsMap)
 				recordToolSideEffects(name, argsMap, modSet, &ps.Commands)
@@ -1339,6 +1613,17 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 					Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(argsStr, 300)),
 					RawOutput: fmt.Sprintf("Call `%s`: %s", name, argsStr),
 				})
+				continue
+			}
+			if pType == "function_call_output" || pType == "custom_tool_call_output" {
+				raw := extractContentText(payload["output"])
+				if strings.TrimSpace(raw) != "" {
+					addTurn(SessionTurn{
+						Role:      "tool_result",
+						Text:      summarizeToolOutput(raw),
+						RawOutput: raw,
+					})
+				}
 				continue
 			}
 		}

@@ -40,8 +40,46 @@ type RemoteBundle struct {
 	GlobalRules   map[string]string `json:"global_rules"`
 }
 
+func slimSessionForRemote(ps *ParsedSession) *ParsedSession {
+	if ps == nil {
+		return nil
+	}
+	cp := *ps
+	// Only send the active post-compaction context (`CompactSummary` + `PostCompact`)
+	// instead of duplicating ancient pre-compaction `AllTurns` (which can be 60-200 MB
+	// in long-lived project transcripts).
+	cp.AllTurns = nil
+	post := make([]SessionTurn, len(ps.PostCompact))
+	copy(post, ps.PostCompact)
+	cp.PostCompact = post
+
+	// Ensure total JSON size of the active turns fits comfortably within public paste limits (~2.5 MB uncompressed -> ~350 KB gzipped)
+	if rawJSON, err := json.Marshal(&cp); err == nil && len(rawJSON) > 2500000 {
+		for i := range cp.PostCompact {
+			if len(cp.PostCompact[i].RawOutput) > 16384 {
+				cp.PostCompact[i].RawOutput = cp.PostCompact[i].RawOutput[:16384] + "\n...[truncated oversized raw output for remote transfer]"
+			}
+		}
+		if rawJSON2, err := json.Marshal(&cp); err == nil && len(rawJSON2) > 2500000 && len(cp.PostCompact) > 40 {
+			budget := 2200000
+			used := len(cp.CompactSummary)
+			keepFrom := len(cp.PostCompact)
+			for i := len(cp.PostCompact) - 1; i >= 0; i-- {
+				sz := len(cp.PostCompact[i].Text) + len(cp.PostCompact[i].RawOutput) + 128
+				if used+sz > budget && keepFrom < len(cp.PostCompact) {
+					break
+				}
+				used += sz
+				keepFrom = i
+			}
+			cp.PostCompact = cp.PostCompact[keepFrom:]
+		}
+	}
+	return &cp
+}
+
 func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
-	ps, err := findAndParseSession(agent, query)
+	ps, err := findAndParseSessionForAction(agent, query, true)
 	if err != nil {
 		return "", err
 	}
@@ -55,7 +93,7 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 		Version:       version,
 		CreatedAt:     time.Now(),
 		SourceWorkdir: cwd,
-		Session:       ps,
+		Session:       slimSessionForRemote(ps),
 		Files:         files,
 		ProjectRules:  projectRules,
 		GlobalRules:   globalRules,
@@ -162,6 +200,12 @@ func saveImportedSessionToLocalIndex(ps *ParsedSession) {
 	}
 	importPath := filepath.Join(importDir, safeID+".baton.json")
 	psCopy := *ps
+	if len(psCopy.AllTurns) == 0 && len(psCopy.PostCompact) > 0 {
+		psCopy.AllTurns = psCopy.PostCompact
+	}
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		psCopy.CWD = cwd
+	}
 	psCopy.ModTime = time.Now()
 	if data, err := json.MarshalIndent(&psCopy, "", "  "); err == nil {
 		_ = os.WriteFile(importPath, data, 0600)
@@ -244,6 +288,9 @@ func pullRemoteSession(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if bundle.Session != nil && len(bundle.Session.AllTurns) == 0 && len(bundle.Session.PostCompact) > 0 {
+		bundle.Session.AllTurns = bundle.Session.PostCompact
+	}
 	saveImportedSessionToLocalIndex(bundle.Session)
 
 	cwd, _ := os.Getwd()
@@ -309,17 +356,25 @@ func pullRemoteSession(token string) (string, error) {
 }
 
 func collectModifiedWorkspaceFiles(cwd string, agentModified []string) []FileEntry {
+	var orderedRels []string
 	relSet := make(map[string]bool)
-	for _, p := range agentModified {
-		rel := toRelIfInside(cwd, p)
-		if rel != "" {
+	addRel := func(rel string) {
+		rel = strings.TrimSpace(rel)
+		if rel != "" && !relSet[rel] && !strings.HasPrefix(rel, ".git") && !strings.HasPrefix(rel, ".fslckout") {
 			relSet[rel] = true
+			orderedRels = append(orderedRels, rel)
 		}
 	}
 
-	// Git
+	for _, p := range agentModified {
+		if rel := toRelIfInside(cwd, p); rel != "" {
+			addRel(rel)
+		}
+	}
+
+	// Git (tracked modified files; untracked files created by the agent are already in agentModified)
 	if _, err := os.Stat(filepath.Join(cwd, ".git")); err == nil {
-		if out, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
+		if out, err := exec.Command("git", "status", "--porcelain", "-uno").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				if len(line) > 3 {
 					path := strings.TrimSpace(line[3:])
@@ -327,60 +382,61 @@ func collectModifiedWorkspaceFiles(cwd string, agentModified []string) []FileEnt
 						path = path[idx+4:]
 					}
 					path = strings.Trim(path, `"`)
-					if path != "" {
-						relSet[path] = true
-					}
+					addRel(path)
 				}
 			}
 		}
 	}
 
-	// Fossil
+	// Fossil (tracked modified files via `fossil changes`)
 	if _, err := os.Stat(filepath.Join(cwd, ".fslckout")); err == nil {
 		if out, err := exec.Command("fossil", "changes").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				fields := strings.Fields(line)
 				if len(fields) >= 2 {
-					relSet[fields[len(fields)-1]] = true
-				}
-			}
-		}
-		if out, err := exec.Command("fossil", "extras").Output(); err == nil {
-			for _, line := range strings.Split(string(out), "\n") {
-				f := strings.TrimSpace(line)
-				if f != "" {
-					relSet[f] = true
+					addRel(fields[len(fields)-1])
 				}
 			}
 		}
 	}
 
-	// SVN
+	// SVN (tracked modified files via `svn status -q`)
 	if _, err := os.Stat(filepath.Join(cwd, ".svn")); err == nil {
-		if out, err := exec.Command("svn", "status").Output(); err == nil {
+		if out, err := exec.Command("svn", "status", "-q").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				fields := strings.Fields(line)
 				if len(fields) >= 2 {
-					relSet[fields[len(fields)-1]] = true
+					addRel(fields[len(fields)-1])
 				}
 			}
 		}
 	}
 
 	var entries []FileEntry
-	for rel := range relSet {
-		if strings.HasPrefix(rel, ".git") {
-			continue
-		}
+	totalBytes := 0
+	const maxTotalFileBytes = 1500 * 1024
+	for _, rel := range orderedRels {
 		full := filepath.Join(cwd, rel)
 		info, err := os.Stat(full)
-		if err != nil || info.IsDir() || info.Size() > 2*1024*1024 {
+		if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > 512*1024 {
+			continue
+		}
+		if totalBytes+int(info.Size()) > maxTotalFileBytes {
 			continue
 		}
 		data, err := os.ReadFile(full)
 		if err != nil {
 			continue
 		}
+		// Skip compiled binaries/non-text blobs containing NUL bytes
+		probeLen := len(data)
+		if probeLen > 512 {
+			probeLen = 512
+		}
+		if bytes.IndexByte(data[:probeLen], 0) >= 0 {
+			continue
+		}
+		totalBytes += len(data)
 		entries = append(entries, FileEntry{
 			RelPath: rel,
 			Mode:    info.Mode(),
@@ -636,7 +692,7 @@ func decryptAndDecompressBundle(b64Data, hexKey string) (*RemoteBundle, error) {
 }
 
 func uploadPasteRS(payload string) (string, error) {
-	client := &http.Client{Timeout: 12 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("POST", "https://paste.rs/", strings.NewReader(payload))
 	if err != nil {
 		return "", err
@@ -659,7 +715,7 @@ func uploadPasteRS(payload string) (string, error) {
 }
 
 func uploadDpaste(payload string) (string, error) {
-	client := &http.Client{Timeout: 12 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	form := url.Values{}
 	form.Set("content", payload)
 	form.Set("format", "url")
@@ -683,12 +739,12 @@ func uploadDpaste(payload string) (string, error) {
 }
 
 func uploadTermbin(payload string) (string, error) {
-	conn, err := net.DialTimeout("tcp", "termbin.com:9999", 10*time.Second)
+	conn, err := net.DialTimeout("tcp", "termbin.com:9999", 15*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(12 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 	if _, err := io.WriteString(conn, payload+"\n"); err != nil {
 		return "", err
 	}
