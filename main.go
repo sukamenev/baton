@@ -118,7 +118,7 @@ func main() {
 			fmt.Println(report)
 			return
 		}
-		agent, query := resolveAgentAndQuery(os.Args[2:], "latest")
+		agent, query := resolveAgentAndQuery(os.Args[2:], "")
 		report, err := loadSessionContext(agent, query)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
