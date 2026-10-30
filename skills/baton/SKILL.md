@@ -30,7 +30,7 @@ The user may write in any language. The phrases in the table below are English e
 | "Delete saved session my_session" | `baton rm my_session` (or `baton rm <#>` with the number from `baton list`) |
 | "Clear/delete all saved sessions" | `baton clear` |
 | "Update baton" | `baton update` |
-| "The session was not saved (context/quota ran out), take one of the existing sessions" | `baton import` |
+| "The session was not saved (context/quota ran out), take one of the existing sessions" | `baton import` (only lists the agents' own sessions that can be imported into baton's store; then ask which one to import) |
 | "Import session #2" / "Import session my_session" / "Import session 726d401d" | `baton import 2` / `baton import my_session` / `baton import 726d401d` |
 | "Save/name session #7 as my_session" (a session other than the current one) | `baton import 7 as my_session` |
 | "Import session #3 as my_session without loading it" | `baton import 3 as my_session --no-load` |
@@ -42,7 +42,7 @@ Note for Codex CLI: if a remote `baton load <URL>` or `baton push` fails due to 
 ## Rules After Running `baton list`, `baton load`, or `baton import`
 
 1. **If `baton` returned a numbered candidate list (`#1`, `#2`, ...):**
-   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Reproduce **every** entry exactly as printed: number, time, agent, name, session ID, working directory, and preview. Do not summarize, regroup, merge, or collapse entries (never write things like "#7–#15: older sessions"), do not drop previews, and do not add your own commentary between entries.
+   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Reproduce **every** entry exactly as printed, inside the same ```` ```text ```` code block (it keeps the indentation): number, time, agent, name, session ID, working directory, and the last prompt. Do not summarize, regroup, merge, or collapse entries (never write things like "#7–#15: older sessions"), do not drop previews, and do not add your own commentary between entries.
    - Then ask the user which number or name to load/import, and wait for the answer. Do not pick a session yourself after `baton list` or `baton import`; only after a `baton load` fallback list, if #1 clearly matches the current project directory, you may run `baton load 1` directly.
    - If `baton load` reports that there are no saved sessions (or none of them is the one the user wants), run `baton import` to list raw sessions of all agents and let the user pick one. `baton import <#|name>` saves the chosen session into baton and loads it in one step.
 2. **Check `Handoff Status` at the bottom of the `baton load` output:**

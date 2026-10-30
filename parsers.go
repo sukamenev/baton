@@ -678,14 +678,17 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 	writeCandidateRows(&sb, candidates[:limit])
 	sb.WriteString("\n**How to load a saved session:**\n")
 	sb.WriteString("- Latest saved session: `baton load`\n")
-	sb.WriteString("- By candidate number: `baton load 1`\n")
+	sb.WriteString("- By number: `baton load 1`\n")
 	sb.WriteString("- By session name: `baton load <name>`\n")
 	sb.WriteString("- By session ID: `baton load <id>`\n")
-	sb.WriteString("- Session not saved before the agent ran out of context/quota: `baton import`\n")
+	sb.WriteString("\nThe session you need is not in this list (for example, the agent hit its limit before `baton save`)? `baton import` lists the agents' own sessions that can be imported into baton.\n")
 	return sb.String()
 }
 
+// writeCandidateRows prints the list inside a code block: Markdown renderers in
+// the agents would otherwise strip the indentation that sets rows apart.
 func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
+	sb.WriteString("```text\n")
 	for i, c := range candidates {
 		title := c.Title
 		if title == "" {
@@ -694,12 +697,13 @@ func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
 		sb.WriteString(fmt.Sprintf("#%d  %s  [%s] %s  · id %s\n",
 			i+1, c.ModTime.Format("2006-01-02 15:04"), c.Agent, title, shortSessionID(c.SessionID())))
 		if c.CWD != "" {
-			sb.WriteString(fmt.Sprintf("   Workdir: `%s`\n", c.CWD))
+			sb.WriteString(fmt.Sprintf("    %s\n", c.CWD))
 		}
 		if c.Preview != "" {
-			sb.WriteString(fmt.Sprintf("   Preview: %s\n", c.Preview))
+			sb.WriteString(fmt.Sprintf("    %s\n", c.Preview))
 		}
 	}
+	sb.WriteString("```\n")
 }
 
 // --- `baton import`: pick a raw agent session that was never saved with `baton save` ---
@@ -754,7 +758,7 @@ func formatImportListReport(unmatchedQuery string, candidates []SessionCandidate
 	}
 	writeCandidateRows(&sb, candidates)
 	sb.WriteString("\n**How to import a session into baton and load it:**\n")
-	sb.WriteString("- By candidate number: `baton import 1`\n")
+	sb.WriteString("- By number: `baton import 1`\n")
 	sb.WriteString("- By session name: `baton import <name>`\n")
 	sb.WriteString("- By session ID: `baton import <id>`\n")
 	sb.WriteString("- Under another name: `baton import 1 as <name>`; without loading: add `--no-load`\n")

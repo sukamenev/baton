@@ -136,7 +136,7 @@ Or via the slash command:
 /baton load 1
 ```
 
-**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Unlike `baton load`, it lists the 15 most recent sessions of all five agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
+**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Without arguments, `baton import` only shows a list and never imports anything by itself. Unlike `baton load`, it lists the 15 most recent sessions of all five agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
 
 ```text
 baton import 1
@@ -199,7 +199,7 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 |---|---|
 | `baton save [name]` | Saves the current session into baton (`~/.config/baton/saved/`) under a name, the folder name by default, and prints a ready-to-paste prompt for the next agent. If another session already has that name, this one is saved as `name-2`. |
 | `baton push [name]` | Saves the current session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
-| `baton load [name\|#\|id\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load my_session`), candidate number (`baton load 1`), session ID (`baton load 726d401d`), or remote URL/token (`baton load https://...#key`). |
+| `baton load [name\|#\|id\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load my_session`), number (`baton load 1`), session ID (`baton load 726d401d`), or remote URL/token (`baton load https://...#key`). |
 | `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...), newest first. |
 | `baton import [#\|name\|id] [as name] [--no-load]` | Lists recent sessions of all agents (`#1`, `#2`, ...); with a number, name, or session ID, saves that session into baton (under the `as` name, if given) and loads it (`--no-load`: only saves). For sessions that were never saved. |
 | `baton rm <name\|#>` | Deletes one saved session (exact name or number from `baton list`). The agent's own session log is not touched. |
