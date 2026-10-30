@@ -887,7 +887,7 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 		case "user":
 			switch content := msg["content"].(type) {
 			case string:
-				if strings.Contains(content, "<compact_summary>") {
+				if strings.HasPrefix(strings.TrimSpace(content), "<compact_summary>") {
 					markCompact(content)
 					continue
 				}
@@ -1182,7 +1182,7 @@ func parseAgyTranscriptJSONL(path string, ps *ParsedSession) error {
 		content, _ := row["content"].(string)
 		thinking, _ := row["thinking"].(string)
 
-		if stepType == "CHECKPOINT" || stepType == "COMPACTION" || strings.Contains(content, "<compact_summary>") {
+		if stepType == "CHECKPOINT" || stepType == "COMPACTION" {
 			ps.PreCompactTurns = turnID
 			ps.CompactSummary = content
 			ps.PostCompact = nil
@@ -1271,7 +1271,7 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 			}
 		}
 
-		if typ == "compaction" || typ == "context_compacted" || strings.HasPrefix(content, "[Context Compacted]") || strings.Contains(content, "<context_summary>") {
+		if typ == "compaction" || typ == "context_compacted" || (role != "tool" && (strings.HasPrefix(strings.TrimSpace(content), "[Context Compacted]") || strings.HasPrefix(strings.TrimSpace(content), "<context_summary>"))) {
 			summary := content
 			if summary == "" {
 				summary = extractContentText(row["summary"])
