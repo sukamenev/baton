@@ -85,6 +85,15 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 	}
 
 	cwd, _ := os.Getwd()
+	if ps.CWD == "" && cwd != "" {
+		ps.CWD = cwd
+	}
+	saveName := strings.TrimSpace(ps.Title)
+	if saveName == "" && cwd != "" {
+		saveName = filepath.Base(cwd)
+	}
+	_, _ = saveSessionToBatonStore(ps, saveName)
+
 	files := collectModifiedWorkspaceFiles(cwd, ps.ModifiedFiles)
 	projectRules := collectProjectRuleFiles(cwd)
 	globalRules := collectGlobalRuleFiles()
@@ -190,36 +199,14 @@ func saveImportedSessionToLocalIndex(ps *ParsedSession) {
 	if ps == nil {
 		return
 	}
-	importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
-	if err := os.MkdirAll(importDir, 0700); err != nil {
-		return
+	title := strings.TrimSpace(ps.Title)
+	if title == "" && ps.CWD != "" {
+		title = filepath.Base(ps.CWD)
 	}
-	safeID := filepath.Base(ps.SessionID)
-	if safeID == "" || safeID == "." || safeID == "/" {
-		safeID = fmt.Sprintf("%s-%d", ps.Agent, time.Now().Unix())
+	if title == "" || title == "." || title == "/" {
+		title = filepath.Base(ps.SessionID)
 	}
-	importPath := filepath.Join(importDir, safeID+".baton.json")
-	psCopy := *ps
-	if len(psCopy.AllTurns) == 0 && len(psCopy.PostCompact) > 0 {
-		psCopy.AllTurns = psCopy.PostCompact
-	}
-	if cwd, err := os.Getwd(); err == nil && cwd != "" {
-		psCopy.CWD = cwd
-	}
-	psCopy.ModTime = time.Now()
-	if data, err := json.MarshalIndent(&psCopy, "", "  "); err == nil {
-		_ = os.WriteFile(importPath, data, 0600)
-		aliases := loadAliases()
-		title := strings.TrimSpace(ps.Title)
-		if title == "" && ps.CWD != "" {
-			title = filepath.Base(ps.CWD)
-		}
-		if title == "" || title == "." || title == "/" {
-			title = safeID
-		}
-		aliases[importPath] = title
-		_ = saveAliases(aliases)
-	}
+	_, _ = saveSessionToBatonStore(ps, title)
 }
 
 func pullRemoteSession(token string) (string, error) {

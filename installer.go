@@ -34,6 +34,7 @@ When the user asks in plain language (Russian, English, or any language) to cont
 | "Save/name this session auth-refactor" / "Сохрани сессию auth-refactor" | ` + "`baton save auth-refactor`" + ` |
 | "Push/send this session for my laptop" / "Отправь сессию на другой компьютер" | ` + "`baton push`" + ` |
 | "Load remote session https://...#key or baton:..." / "Загрузи сессию по ссылке/токену" | ` + "`baton load <URL|token>`" + ` |
+| "Clear/delete all saved sessions" / "Очисти/удали все сохранённые сессии" | ` + "`baton clear`" + ` |
 
 ## Rules After Running ` + "`baton load`" + `
 

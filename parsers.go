@@ -145,7 +145,167 @@ func cleanupOldHandoffs() {
 	}
 }
 
-// --- Session Aliases (Named Sessions) ---
+// --- Baton Saved Sessions Store & Session Aliases ---
+
+func savedSessionsDir() string {
+	return filepath.Join(batonConfigDir(), "saved")
+}
+
+func sanitizeSessionFileName(name string) string {
+	name = strings.TrimSpace(name)
+	repl := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
+	safe := repl.Replace(name)
+	if safe == "" || safe == "." || safe == ".." {
+		safe = fmt.Sprintf("session-%d", time.Now().Unix())
+	}
+	return safe
+}
+
+func saveSessionToBatonStore(ps *ParsedSession, name string) (string, error) {
+	if ps == nil {
+		return "", fmt.Errorf("parsed session is nil")
+	}
+	dir := savedSessionsDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = strings.TrimSpace(ps.Title)
+	}
+	if name == "" && ps.CWD != "" {
+		name = filepath.Base(ps.CWD)
+	}
+	if name == "" {
+		name = ps.SessionID
+	}
+
+	cp := *ps
+	cp.Title = name
+	cp.ModTime = time.Now()
+	if cp.CWD == "" {
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			cp.CWD = cwd
+		}
+	}
+	// Keep only post-compaction active context in the saved snapshot so loading is instant
+	cp.AllTurns = cp.PostCompact
+
+	safeName := sanitizeSessionFileName(name)
+	savePath := filepath.Join(dir, safeName+".baton.json")
+	data, err := json.MarshalIndent(&cp, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(savePath, data, 0600); err != nil {
+		return "", err
+	}
+	aliases := loadAliases()
+	aliases[savePath] = name
+	if ps.SourceFile != "" {
+		aliases[ps.SourceFile] = name
+	}
+	_ = saveAliases(aliases)
+	return savePath, nil
+}
+
+func clearSavedSessions() (string, error) {
+	var removed int
+	for _, sub := range []string{"saved", "imported", "vault_cache"} {
+		dir := filepath.Join(batonConfigDir(), sub)
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".baton.json") {
+					removed++
+				}
+			}
+		}
+		_ = os.RemoveAll(dir)
+	}
+	_ = os.Remove(aliasesFilePath())
+	_ = os.RemoveAll(handoffBaseDir())
+	return fmt.Sprintf("Cleared all locally saved Baton sessions (%d saved session(s) removed).", removed), nil
+}
+
+func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent == "" || agent == "auto" {
+		agent = "all"
+	}
+	aliases := loadAliases()
+	var out []SessionCandidate
+	seen := make(map[string]bool)
+
+	for _, sub := range []string{"saved", "imported"} {
+		dir := filepath.Join(batonConfigDir(), sub)
+		files, err := filepath.Glob(filepath.Join(dir, "*.baton.json"))
+		if err != nil {
+			continue
+		}
+		for _, m := range files {
+			if seen[m] {
+				continue
+			}
+			info, err := os.Stat(m)
+			if err != nil || info.IsDir() || info.Size() == 0 {
+				continue
+			}
+			data, err := os.ReadFile(m)
+			if err != nil {
+				continue
+			}
+			var meta struct {
+				Agent       string        `json:"agent"`
+				Title       string        `json:"title"`
+				CWD         string        `json:"cwd"`
+				PostCompact []SessionTurn `json:"post_compact"`
+			}
+			if json.Unmarshal(data, &meta) != nil {
+				continue
+			}
+			ag := strings.ToLower(strings.TrimSpace(meta.Agent))
+			if ag == "" {
+				ag = "saved"
+			}
+			if agent != "all" && agent != ag {
+				continue
+			}
+			title := strings.TrimSpace(meta.Title)
+			if title == "" {
+				title = aliases[m]
+			}
+			if title == "" {
+				title = strings.TrimSuffix(filepath.Base(m), ".baton.json")
+			}
+			preview := ""
+			for i := len(meta.PostCompact) - 1; i >= 0; i-- {
+				txt := strings.TrimSpace(meta.PostCompact[i].Text)
+				low := strings.ToLower(txt)
+				if meta.PostCompact[i].Role == "user" && txt != "" && !strings.HasPrefix(low, "baton ") && !strings.HasPrefix(low, "/baton") && low != "baton" {
+					preview = truncateInline(txt, 140)
+					break
+				}
+			}
+			if query != "" && !candidateMatchesQuery(m, title, preview, query) {
+				continue
+			}
+			seen[m] = true
+			out = append(out, SessionCandidate{
+				Agent:   ag,
+				Path:    m,
+				Title:   title,
+				CWD:     meta.CWD,
+				ModTime: info.ModTime(),
+				Preview: preview,
+			})
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ModTime.After(out[j].ModTime)
+	})
+	return out
+}
 
 func aliasesFilePath() string {
 	return filepath.Join(batonConfigDir(), "aliases.json")
@@ -173,7 +333,7 @@ func saveAliases(aliases map[string]string) error {
 }
 
 // detectCallerAgent identifies which CLI coding agent is currently executing baton
-// by inspecting agent-specific environment variables and the parent process tree.
+// by inspecting agent-specific environment variables and walking the parent process tree.
 func detectCallerAgent() string {
 	if os.Getenv("CLAUDECODE") != "" || os.Getenv("CLAUDE_CODE_ENTRYPOINT") != "" {
 		return "claude"
@@ -190,9 +350,24 @@ func detectCallerAgent() string {
 	if os.Getenv("ANTIGRAVITY_CLI") != "" {
 		return "agy"
 	}
-	// Check parent process tree on Linux/macOS if available
+	// Walk parent process tree on Linux/macOS if available
 	pid := os.Getppid()
-	for depth := 0; depth < 4 && pid > 1; depth++ {
+	for depth := 0; depth < 12 && pid > 1; depth++ {
+		if envBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid)); err == nil && len(envBytes) > 0 {
+			envStr := string(envBytes)
+			switch {
+			case strings.Contains(envStr, "CLAUDECODE=") || strings.Contains(envStr, "CLAUDE_CODE_ENTRYPOINT="):
+				return "claude"
+			case strings.Contains(envStr, "CODEX_SANDBOX=") || strings.Contains(envStr, "CODEX_THREAD_ID="):
+				return "codex"
+			case strings.Contains(envStr, "PI_SESSION_ID="):
+				return "pi"
+			case strings.Contains(envStr, "HERMES_SESSION_ID="):
+				return "hermes"
+			case strings.Contains(envStr, "ANTIGRAVITY_CLI="):
+				return "agy"
+			}
+		}
 		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 		if err != nil {
 			break
@@ -203,7 +378,7 @@ func detectCallerAgent() string {
 			return "claude"
 		case strings.Contains(lower, "codex"):
 			return "codex"
-		case strings.Contains(lower, "antigravity") || strings.Contains(lower, "/agy"):
+		case strings.Contains(lower, "antigravity") || strings.Contains(lower, "/agy ") || strings.HasSuffix(strings.TrimSpace(lower), "/agy"):
 			return "agy"
 		case strings.Contains(lower, "hermes"):
 			return "hermes"
@@ -335,19 +510,19 @@ func nameSession(name, agent, query string) (string, error) {
 			chosen = filtered[0]
 		}
 	}
-	aliases := loadAliases()
-	aliases[chosen.Path] = name
-	if err := saveAliases(aliases); err != nil {
+	ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse session %s: %w", chosen.Path, err)
+	}
+	if ps.CWD == "" {
+		ps.CWD = chosen.CWD
+	}
+	savePath, err := saveSessionToBatonStore(ps, name)
+	if err != nil {
 		return "", err
 	}
-	touchPath := chosen.Path
-	if idx := strings.Index(touchPath, "::"); idx > 0 {
-		touchPath = touchPath[:idx]
-	}
-	now := time.Now()
-	_ = os.Chtimes(touchPath, now, now)
-	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s`)\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
-		name, chosen.Agent, filepath.Base(chosen.Path), name, name), nil
+	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
+		name, ps.Agent, filepath.Base(chosen.Path), filepath.Base(savePath), name, name), nil
 }
 
 func parseCandidateIndex(q string, total int) (int, bool) {
@@ -361,7 +536,7 @@ func parseCandidateIndex(q string, total int) (int, bool) {
 
 func formatCandidateListReport(agent, unmatchedQuery string, candidates []SessionCandidate) string {
 	if len(candidates) == 0 {
-		return fmt.Sprintf("No local sessions found for agent '%s'.", agent)
+		return "No saved Baton sessions found. Save a session first with `baton save [name]` or `baton push [name]`, or import one with `baton load <URL>`."
 	}
 	limit := 10
 	if len(candidates) < limit {
@@ -370,9 +545,9 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 
 	var sb strings.Builder
 	if unmatchedQuery != "" && !strings.EqualFold(unmatchedQuery, "candidates") && !strings.EqualFold(unmatchedQuery, "list") && unmatchedQuery != "?" {
-		sb.WriteString(fmt.Sprintf("> No session matched `%s`. Showing the %d most recent session candidates below:\n\n", unmatchedQuery, limit))
+		sb.WriteString(fmt.Sprintf("> No saved session matched `%s`. Showing the %d most recent saved Baton sessions below:\n\n", unmatchedQuery, limit))
 	} else {
-		sb.WriteString(fmt.Sprintf("# Session Candidates (showing top %d of %d)\n\n", limit, len(candidates)))
+		sb.WriteString(fmt.Sprintf("# Saved Baton Sessions (showing top %d of %d)\n\n", limit, len(candidates)))
 	}
 
 	for i := 0; i < limit; i++ {
@@ -390,14 +565,15 @@ func formatCandidateListReport(agent, unmatchedQuery string, candidates []Sessio
 			sb.WriteString(fmt.Sprintf("   Preview: %s\n", c.Preview))
 		}
 	}
-	sb.WriteString("\n**How to load a candidate:**\n")
+	sb.WriteString("\n**How to load a saved session:**\n")
+	sb.WriteString("- Latest saved session: `baton load`\n")
 	sb.WriteString("- By candidate number: `baton load 1`\n")
 	sb.WriteString("- By session name: `baton load <name>`\n")
 	return sb.String()
 }
 
 func listSessionsReport(agent, query string) string {
-	candidates := discoverSessions(agent, query)
+	candidates := discoverSavedBatonSessions(agent, query)
 	return formatCandidateListReport(agent, "", candidates)
 }
 
@@ -405,7 +581,7 @@ func loadSessionContext(agent, query string) (string, error) {
 	cleanupOldHandoffs()
 	qTrim := strings.TrimSpace(query)
 	if strings.EqualFold(qTrim, "candidates") || strings.EqualFold(qTrim, "list") || qTrim == "?" {
-		all := discoverSessions(agent, "")
+		all := discoverSavedBatonSessions(agent, "")
 		return formatCandidateListReport(agent, qTrim, all), nil
 	}
 	if qTrim == "" {
@@ -415,8 +591,8 @@ func loadSessionContext(agent, query string) (string, error) {
 	parsed, err := findAndParseSession(agent, qTrim)
 	if err != nil {
 		// Fallback: if the user gave a name that doesn't match, return the numbered
-		// list of session candidates so they can see available sessions.
-		all := discoverSessions(agent, "")
+		// list of saved session candidates so they can see available saved sessions.
+		all := discoverSavedBatonSessions(agent, "")
 		if len(all) > 0 {
 			return formatCandidateListReport(agent, qTrim, all), nil
 		}
@@ -467,6 +643,38 @@ func findAndParseSessionForAction(agent, query string, forSaveOrPush bool) (*Par
 	if query == "" {
 		query = "latest"
 	}
+	if !forSaveOrPush {
+		savedCandidates := discoverSavedBatonSessions(agent, "")
+		if len(savedCandidates) == 0 {
+			return nil, fmt.Errorf("no saved Baton sessions found (run 'baton save [name]' or 'baton push [name]' in the source agent first)")
+		}
+		if idx, ok := parseCandidateIndex(query, len(savedCandidates)); ok {
+			chosen := savedCandidates[idx]
+			return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+		}
+		if strings.EqualFold(query, "latest") {
+			chosen := savedCandidates[0]
+			return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+		}
+		qLower := strings.ToLower(query)
+		for _, c := range savedCandidates {
+			if c.Title != "" && strings.EqualFold(c.Title, query) {
+				return parseSessionFile(c.Agent, c.Path, c.ModTime)
+			}
+		}
+		for _, c := range savedCandidates {
+			if c.Title != "" && strings.Contains(strings.ToLower(c.Title), qLower) {
+				return parseSessionFile(c.Agent, c.Path, c.ModTime)
+			}
+		}
+		filteredSaved := discoverSavedBatonSessions(agent, query)
+		if len(filteredSaved) > 0 {
+			chosen := filteredSaved[0]
+			return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+		}
+		return nil, fmt.Errorf("no saved Baton session matching '%s'", query)
+	}
+
 	allCandidates := discoverSessions(agent, "")
 	if len(allCandidates) == 0 {
 		return nil, fmt.Errorf("no sessions found for agent '%s'", agent)
@@ -489,55 +697,17 @@ func findAndParseSessionForAction(agent, query string, forSaveOrPush bool) (*Par
 
 	// 2. Check if query is "latest"
 	if strings.EqualFold(query, "latest") {
-		if forSaveOrPush {
-			chosen := selectCurrentSessionCandidate(agent, allCandidates)
-			ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-			if err == nil {
-				if ps.Title == "" {
-					ps.Title = chosen.Title
-				}
-				if ps.CWD == "" {
-					ps.CWD = chosen.CWD
-				}
-			}
-			return ps, err
-		}
-		// For `baton load`: skip the currently running caller thread (if CODEX_THREAD_ID is set)
-		// and skip stub sessions that only contain a "baton load" request.
-		codexThread := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID"))
-		var firstParsed *ParsedSession
-		var firstErr error
-		for i, cand := range allCandidates {
-			if i > 12 {
-				break
-			}
-			if codexThread != "" && strings.Contains(filepath.Base(cand.Path), codexThread) {
-				continue
-			}
-			ps, err := parseSessionFile(cand.Agent, cand.Path, cand.ModTime)
-			if err != nil {
-				if firstParsed == nil {
-					firstErr = err
-				}
-				continue
-			}
+		chosen := selectCurrentSessionCandidate(agent, allCandidates)
+		ps, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
+		if err == nil {
 			if ps.Title == "" {
-				ps.Title = cand.Title
+				ps.Title = chosen.Title
 			}
 			if ps.CWD == "" {
-				ps.CWD = cand.CWD
-			}
-			if firstParsed == nil {
-				firstParsed = ps
-			}
-			if !isHandoffStubSession(ps) {
-				return ps, nil
+				ps.CWD = chosen.CWD
 			}
 		}
-		if firstParsed != nil {
-			return firstParsed, nil
-		}
-		return nil, firstErr
+		return ps, err
 	}
 
 	// 3. Exact or substring match on session Title / Alias first

@@ -166,9 +166,9 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 /baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
 ```
 
-`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-handoff/<session_id>/global_rules/`, registers the downloaded session in your local `baton` index (`~/.cache/baton/imported/` so subsequent `baton load` or `baton list` calls work offline without re-downloading), and loads the full active session context.
+`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-handoff/<session_id>/global_rules/`, saves the downloaded session into Baton's saved sessions store (`~/.config/baton/saved/` so subsequent `baton load` or `baton list` calls work offline without re-downloading), and loads the full active session context.
 
-> **Codex CLI Sandbox Note:** `baton install` places a granular Starlark rule in `~/.codex/rules/baton.rules` (`prefix_rule(pattern=["baton"], decision="allow")`) so `baton` can read session directories and download remote bundles without requiring you to enable `network_access = true` globally in `~/.codex/config.toml`.
+> **Codex CLI Sandbox Note:** If Codex CLI's workspace sandbox blocks network access during a remote `baton load <URL>` and policy rejects permission escalation, run `!baton load "<URL>"` directly at the Codex prompt (with a leading exclamation mark `!`) to download and save the bundle into `~/.config/baton/saved/`, and then type `baton load`.
 
 ---
 
@@ -176,10 +176,11 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 
 | Command | Description |
 |---|---|
-| `baton save [alias] [agent]` | Saves/tags the current session locally (defaults to the current folder name if `alias` is omitted) and prints a self-bootstrapping handoff prompt. |
-| `baton push [name]` | Packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
-| `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the latest session; also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
-| `baton list [agent] [query]` | Lists numbered session candidates (`#1`, `#2`, ...) across `claude`, `codex`, `agy`, `pi`, `hermes`. |
+| `baton save [alias] [agent]` | Saves a snapshot of the current active session into Baton's local saved store (`~/.config/baton/saved/`, defaulting to the current folder name if `alias` is omitted) and prints a self-bootstrapping handoff prompt. |
+| `baton push [name]` | Saves the session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
+| `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
+| `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...) stored in `~/.config/baton/saved/`. |
+| `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff caches (`/tmp/baton-handoff/`). |
 | `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
 | `baton update` | Updates the `baton` binary and refreshes `SKILL.md` and `/baton` across all installed agents. |
 

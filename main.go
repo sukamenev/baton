@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -106,6 +106,13 @@ func main() {
 	case "list", "candidates":
 		agent, query := resolveAgentAndQuery(os.Args[2:], "")
 		fmt.Println(listSessionsReport(agent, query))
+	case "clear", "clean", "reset":
+		msg, err := clearSavedSessions()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Clear error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(msg)
 	case "load", "pull", "apply":
 		// If a remote URL (https://...#key) or transfer token (baton:...#key) is passed,
 		// automatically download, decrypt, and restore the remote session!
@@ -186,10 +193,11 @@ func printUsage() {
 	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, hermes)
 
 Usage:
-  baton save <name>                 Save/tag the active session locally under a memorable name
+  baton save [name]                 Save the active session into baton's local store (defaults to folder name)
   baton push [name]                 Pack (tar.gz), encrypt (AES-256-GCM), and upload session + uncommitted files to the cloud
-  baton load [name|agent|#|token]   Load latest session, named session ('baton load auth-refactor'), candidate # ('baton load 1'), or remote token ('baton load baton:...')
-  baton list [agent]                List numbered session candidates (#1, #2, ...) across all or specific agents
+  baton load [name|#|URL|token]     Load the latest saved session in baton, a specific saved session, or a remote URL/token
+  baton list                        List saved sessions in baton's local store (#1, #2, ...)
+  baton clear                       Delete all locally saved sessions and temporary handoff files in baton
   baton turn <session_id> <turn_id> Print full untruncated output of a specific conversation turn
   baton install                     Install SKILL.md and /baton slash command across all supported agents
   baton status                      Check skill installation status for all supported agents

@@ -261,8 +261,9 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 		t.Fatalf("unexpected agent-only resolution: %q %q", ag, q)
 	}
 
-	// Verify Named Sessions & Candidate List fallback using isolated PI_CODING_AGENT_DIR
+	// Verify Saved Baton Sessions Store (`baton save`, `baton list`, `baton load`, `baton clear`)
 	tmp := t.TempDir()
+	t.Setenv("BATON_CONFIG_DIR", filepath.Join(tmp, "baton-cfg"))
 	t.Setenv("PI_CODING_AGENT_DIR", tmp)
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
@@ -274,6 +275,12 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 		`{"type":"message","id":"m1","parentId":"i1","message":{"role":"user","content":[{"type":"text","text":"Fix invoice rounding"}]}}` + "\n"
 	if err := os.WriteFile(sFile, []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+
+	// 0. Save session into Baton's saved sessions store (`baton save billing-fix`)
+	saveMsg, err := nameSession("billing-fix", "pi", "")
+	if err != nil || !strings.Contains(saveMsg, "billing-fix") {
+		t.Fatalf("expected nameSession to save session, err=%v, msg=%s", err, saveMsg)
 	}
 
 	// 1. Load by session name ("billing-fix")
@@ -292,5 +299,15 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	reportByNum, err := loadSessionContext("pi", "1")
 	if err != nil || !strings.Contains(reportByNum, "Fix invoice rounding") {
 		t.Fatalf("expected candidate #1 load to succeed, err=%v, report=%s", err, reportByNum)
+	}
+
+	// 4. Clear all saved Baton sessions (`baton clear`)
+	clearMsg, err := clearSavedSessions()
+	if err != nil || !strings.Contains(clearMsg, "1 saved session") {
+		t.Fatalf("expected clearSavedSessions to remove 1 session, err=%v, msg=%s", err, clearMsg)
+	}
+	listAfterClear := listSessionsReport("", "")
+	if !strings.Contains(listAfterClear, "No saved Baton sessions found") {
+		t.Fatalf("expected empty saved session list after clear, got: %s", listAfterClear)
 	}
 }
