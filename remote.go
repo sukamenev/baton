@@ -115,7 +115,19 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 	for _, p := range chain {
 		id, err := p.fn(encryptedB64)
 		if err == nil && id != "" {
-			return fmt.Sprintf("baton:%s:%s#%s", p.name, id, hexKey), nil
+			switch p.name {
+			case "pasters":
+				return fmt.Sprintf("https://paste.rs/%s#%s", id, hexKey), nil
+			case "dpaste":
+				if strings.HasPrefix(id, "http") {
+					return fmt.Sprintf("%s#%s", id, hexKey), nil
+				}
+				return fmt.Sprintf("https://dpaste.org/%s/raw#%s", id, hexKey), nil
+			case "termbin":
+				return fmt.Sprintf("https://termbin.com/%s#%s", id, hexKey), nil
+			default:
+				return fmt.Sprintf("baton:%s:%s#%s", p.name, id, hexKey), nil
+			}
 		}
 		lastErr = err
 	}
@@ -125,47 +137,51 @@ func pushRemoteSession(agent, query, storage, localDir string) (string, error) {
 func pullRemoteSession(token string) (string, error) {
 	cleanupOldHandoffs()
 	token = strings.TrimSpace(token)
-	if !strings.HasPrefix(token, "baton:") {
-		return "", fmt.Errorf("invalid token format (expected baton:<provider>:<id>#<key>)")
-	}
 
 	hashIdx := strings.IndexByte(token, '#')
 	if hashIdx < 0 {
-		return "", fmt.Errorf("missing decryption key after '#' in token")
+		return "", fmt.Errorf("missing decryption key after '#' in URL/token")
 	}
-
-	prefix := token[len("baton:"):hashIdx]
 	hexKey := token[hashIdx+1:]
-
-	colonIdx := strings.IndexByte(prefix, ':')
-	if colonIdx < 0 {
-		return "", fmt.Errorf("missing provider and id in token")
-	}
-	provider := prefix[:colonIdx]
-	id := prefix[colonIdx+1:]
+	beforeHash := token[:hashIdx]
 
 	var encryptedB64 string
 	var err error
 
-	switch provider {
-	case "file":
-		data, rErr := os.ReadFile(id)
-		if rErr != nil {
-			return "", rErr
+	if strings.HasPrefix(beforeHash, "https://") || strings.HasPrefix(beforeHash, "http://") {
+		encryptedB64, err = downloadRawHTTP(beforeHash)
+	} else {
+		if !strings.HasPrefix(beforeHash, "baton:") {
+			return "", fmt.Errorf("invalid token or URL format (expected https://...#<key> or baton:<provider>:<id>#<key>)")
 		}
-		encryptedB64 = string(data)
-	case "pasters":
-		encryptedB64, err = downloadRawHTTP("https://paste.rs/" + id)
-	case "dpaste":
-		rawURL := "https://dpaste.org/" + id + "/raw"
-		if strings.HasPrefix(id, "http") {
-			rawURL = id
+		prefix := beforeHash[len("baton:"):]
+		colonIdx := strings.IndexByte(prefix, ':')
+		if colonIdx < 0 {
+			return "", fmt.Errorf("missing provider and id in token")
 		}
-		encryptedB64, err = downloadRawHTTP(rawURL)
-	case "termbin":
-		encryptedB64, err = downloadRawHTTP("https://termbin.com/" + id)
-	default:
-		return "", fmt.Errorf("unknown storage provider: %s", provider)
+		provider := prefix[:colonIdx]
+		id := prefix[colonIdx+1:]
+
+		switch provider {
+		case "file":
+			data, rErr := os.ReadFile(id)
+			if rErr != nil {
+				return "", rErr
+			}
+			encryptedB64 = string(data)
+		case "pasters":
+			encryptedB64, err = downloadRawHTTP("https://paste.rs/" + id)
+		case "dpaste":
+			rawURL := "https://dpaste.org/" + id + "/raw"
+			if strings.HasPrefix(id, "http") {
+				rawURL = id
+			}
+			encryptedB64, err = downloadRawHTTP(rawURL)
+		case "termbin":
+			encryptedB64, err = downloadRawHTTP("https://termbin.com/" + id)
+		default:
+			return "", fmt.Errorf("unknown storage provider: %s", provider)
+		}
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to download snapshot: %w", err)

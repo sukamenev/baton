@@ -107,18 +107,21 @@ func main() {
 		agent, query := resolveAgentAndQuery(os.Args[2:], "")
 		fmt.Println(listSessionsReport(agent, query))
 	case "load", "pull", "apply":
-		// If a remote transfer token (baton:<provider>:<id>#<key>) is passed,
+		// If a remote URL (https://...#key) or transfer token (baton:...#key) is passed,
 		// automatically download, decrypt, and restore the remote session!
-		if len(os.Args) > 2 && strings.HasPrefix(strings.TrimSpace(os.Args[2]), "baton:") {
-			report, err := pullRemoteSession(os.Args[2])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error restoring remote session: %v\n", err)
-				os.Exit(1)
+		if len(os.Args) > 2 {
+			arg := strings.TrimSpace(os.Args[2])
+			if strings.HasPrefix(arg, "baton:") || strings.HasPrefix(arg, "https://") || strings.HasPrefix(arg, "http://") {
+				report, err := pullRemoteSession(arg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error restoring remote session: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println(report)
+				return
 			}
-			fmt.Println(report)
-			return
 		}
-		agent, query := resolveAgentAndQuery(os.Args[2:], "")
+		agent, query := resolveAgentAndQuery(os.Args[2:], "latest")
 		report, err := loadSessionContext(agent, query)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)

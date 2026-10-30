@@ -20,9 +20,10 @@ When the user asks in plain language (Russian, English, or any language) to cont
 | "Load session auth-refactor from claude" | `baton load claude auth-refactor` |
 | "Show recent sessions" / "Какие есть сессии?" (or user forgot the name) | `baton list` |
 | "Load candidate #1" / "Загрузи первую сессию" | `baton load 1` |
+| "Save/name this session" / "Сохрани текущую сессию" | `baton save` |
 | "Save/name this session auth-refactor" / "Сохрани сессию auth-refactor" | `baton save auth-refactor` |
 | "Push/send this session for my laptop" / "Отправь сессию на другой компьютер" | `baton push` |
-| "Load remote session baton:..." / "Загрузи сессию baton:..." | `baton load <token>` |
+| "Load remote session https://...#key or baton:..." / "Загрузи сессию по ссылке/токену" | `baton load <URL\|token>` |
 
 ## Rules After Running `baton load`
 

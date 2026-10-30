@@ -263,59 +263,14 @@ func loadSessionContext(agent, query string) (string, error) {
 		all := discoverSessions(agent, "")
 		return formatCandidateListReport(agent, qTrim, all), nil
 	}
-
-	// When called with no session name (`baton load`), if there is exactly ONE
-	// session saved via `baton save` (or only one session total), load it
-	// immediately without asking; otherwise show the numbered candidate list.
 	if qTrim == "" {
-		all := discoverSessions(agent, "")
-		if len(all) == 0 {
-			return "", fmt.Errorf("no local sessions found for agent '%s'", agent)
-		}
-		aliases := loadAliases()
-		var saved []SessionCandidate
-		for _, c := range all {
-			if aliases[c.Path] != "" {
-				saved = append(saved, c)
-			}
-		}
-		if len(saved) == 1 {
-			chosen := saved[0]
-			parsed, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-			if err != nil {
-				return "", err
-			}
-			if parsed.Title == "" {
-				parsed.Title = chosen.Title
-			}
-			handoffDir, err := writeHandoffDirectory(parsed, nil)
-			if err != nil {
-				return "", err
-			}
-			return formatHandoffSummary(parsed, handoffDir, nil), nil
-		}
-		if len(all) == 1 {
-			chosen := all[0]
-			parsed, err := parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
-			if err != nil {
-				return "", err
-			}
-			if parsed.Title == "" {
-				parsed.Title = chosen.Title
-			}
-			handoffDir, err := writeHandoffDirectory(parsed, nil)
-			if err != nil {
-				return "", err
-			}
-			return formatHandoffSummary(parsed, handoffDir, nil), nil
-		}
-		return formatCandidateListReport(agent, "", all), nil
+		qTrim = "latest"
 	}
 
 	parsed, err := findAndParseSession(agent, qTrim)
 	if err != nil {
-		// Fallback: if the user forgot the session name or gave a name that doesn't match,
-		// return the numbered list of session candidates instead of failing unhelpful!
+		// Fallback: if the user gave a name that doesn't match, return the numbered
+		// list of session candidates so they can see available sessions.
 		all := discoverSessions(agent, "")
 		if len(all) > 0 {
 			return formatCandidateListReport(agent, qTrim, all), nil

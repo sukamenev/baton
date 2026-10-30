@@ -149,21 +149,21 @@ In your active agent, type:
 `baton` encrypts the archive locally and uploads the ciphertext through an automatic zero-config fallback chain (`paste.rs` -> `dpaste.org` -> `termbin.com:9999`, or a local synced folder like Dropbox/Google Drive/Syncthing), returning a self-contained transfer token and a self-bootstrapping prompt:
 
 ```text
-Encrypted session token:
-  baton:pasters:x9K2m#8f4a2c91e7b03d...
+Encrypted session URL / token:
+  https://paste.rs/x9K2m#8f4a2c91e7b03d...
 
 To continue in another agent or on a machine where baton is not installed yet, paste this prompt:
-  Load session baton:pasters:x9K2m#8f4a2c91e7b03d... using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
+  Load session https://paste.rs/x9K2m#8f4a2c91e7b03d... using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
 or if baton is already installed, run:
-  /baton load baton:pasters:x9K2m#8f4a2c91e7b03d...
+  /baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
 ```
 
 > **Zero-Knowledge Transport:** The 256-bit hex key after `#` stays in the URL fragment and is never transmitted to the paste server.
 
-On your laptop, open the project folder in any agent and run:
+On your laptop, open the project folder in any agent and run the exact same `load` command with the URL:
 
 ```text
-/baton load baton:pasters:x9K2m#8f4a2c91e7b03d...
+/baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
 ```
 
 `baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-handoff/<session_id>/global_rules/`, and loads the session context.
@@ -174,9 +174,9 @@ On your laptop, open the project folder in any agent and run:
 
 | Command | Description |
 |---|---|
-| `baton save <alias> [agent]` | Saves/tags a session locally under a memorable name and prints a self-bootstrapping handoff prompt. |
-| `baton push [name]` | Packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules. |
-| `baton load [name\|agent\|#\|token]` | Loads a session by name (`baton load auth-refactor`), candidate number (`baton load 1`), agent (`baton load claude`), latest (`baton load`), or remote token (`baton load baton:...`). |
+| `baton save [alias] [agent]` | Saves/tags the current session locally (defaults to the current folder name if `alias` is omitted) and prints a self-bootstrapping handoff prompt. |
+| `baton push [name]` | Packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
+| `baton load [name\|#\|URL\|token]` | With no arguments (`baton load`), always loads the latest session; also loads by name (`baton load auth-refactor`), candidate number (`baton load 1`), or remote URL/token (`baton load https://...#key`). |
 | `baton list [agent] [query]` | Lists numbered session candidates (`#1`, `#2`, ...) across `claude`, `codex`, `agy`, `pi`, `hermes`. |
 | `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
 | `baton update` | Updates the `baton` binary and refreshes `SKILL.md` and `/baton` across all installed agents. |
