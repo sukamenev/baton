@@ -197,55 +197,97 @@ func releaseAssetName(goos, goarch string) string {
 	return name
 }
 
-// runSelfUpdate performs a two-stage update:
-// 1. If the Go compiler is available, it builds from source via `go install`
-//    (verified against Go's checksum transparency database sum.golang.org).
-// 2. Otherwise, it downloads the prebuilt binary for runtime.GOOS/runtime.GOARCH
-//    from GitHub Releases, verifies its SHA-256 against checksums.txt, and
-//    atomically replaces the executable.
-// Finally, it refreshes SKILL.md and /baton across all installed agents.
+// runSelfUpdate performs a two-stage update of the running executable:
+//  1. If the Go compiler is available, it builds from source via `go install`
+//     (verified against Go's checksum transparency database sum.golang.org),
+//     with GOBIN pointed at the directory of the running binary so the new
+//     build replaces it instead of landing in ~/go/bin.
+//  2. Otherwise (or if stage 1 did not produce the expected version), it
+//     downloads the prebuilt binary for runtime.GOOS/runtime.GOARCH from GitHub
+//     Releases, verifies its SHA-256 against checksums.txt, and atomically
+//     replaces the executable.
+//
+// Each stage is verified by running `<binary> version`. Finally, the NEW binary
+// runs `baton install`, because SKILL.md and /baton are embedded into the binary
+// and this old process only carries the old texts.
 func runSelfUpdate() (string, error) {
 	var sb strings.Builder
 	remoteVer, err := fetchLatestVersion()
-	if err == nil && remoteVer != "" {
-		if !isNewerVersion(remoteVer, version) {
-			_ = syncSkillsSilent()
-			return fmt.Sprintf("baton %s is already up to date (latest.txt: %s). Refreshed SKILL.md across agents.\n", version, remoteVer), nil
-		}
-		sb.WriteString(fmt.Sprintf("Updating baton: %s -> %s (%s/%s)\n", version, remoteVer, runtime.GOOS, runtime.GOARCH))
-	} else {
-		remoteVer = version
-		sb.WriteString(fmt.Sprintf("Checking updates for baton %s (%s/%s)...\n", version, runtime.GOOS, runtime.GOARCH))
+	if err != nil || remoteVer == "" {
+		return "", fmt.Errorf("cannot check the latest version at %s: %v", latestVersionURL, err)
 	}
+	if !isNewerVersion(remoteVer, version) {
+		_ = syncSkillsSilent()
+		return fmt.Sprintf("baton %s is already up to date (latest.txt: %s). Refreshed SKILL.md across agents.\n", version, remoteVer), nil
+	}
+	sb.WriteString(fmt.Sprintf("Updating baton: %s -> %s (%s/%s)\n", version, remoteVer, runtime.GOOS, runtime.GOARCH))
 
+	exePath := resolveBinaryPath()
 	updatedBinary := false
 
-	// Stage 1: Prefer compiling from auditable source via `go install` if Go is installed
-	if _, err := exec.LookPath("go"); err == nil {
+	// Stage 1: Prefer compiling from auditable source via `go install` if Go is installed.
+	// `go install` names the binary after the module ("baton"), so it can only replace
+	// the running executable if that is what it is called.
+	if _, err := exec.LookPath("go"); err == nil && isBatonExecutableName(exePath) {
 		cmd := exec.Command("go", "install", goPackageSpec)
-		if out, err := cmd.CombinedOutput(); err == nil {
-			sb.WriteString("[OK] Rebuilt baton from source via `go install " + goPackageSpec + "` (verified via sum.golang.org)\n")
-			updatedBinary = true
+		cmd.Env = append(os.Environ(), "GOBIN="+filepath.Dir(exePath))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			sb.WriteString(fmt.Sprintf("[INFO] `go install` failed, trying the release binary (%s)\n", strings.TrimSpace(string(out))))
+		} else if got := installedBinaryVersion(exePath); got != remoteVer {
+			// proxy.golang.org may lag behind a fresh tag for a few minutes
+			sb.WriteString(fmt.Sprintf("[INFO] `go install` produced version %q instead of %s, trying the release binary\n", got, remoteVer))
 		} else {
-			sb.WriteString(fmt.Sprintf("[INFO] `go install` fallback to release binary (%s)\n", strings.TrimSpace(string(out))))
+			sb.WriteString(fmt.Sprintf("[OK] Rebuilt %s from source via `go install %s` (verified via sum.golang.org)\n", exePath, goPackageSpec))
+			updatedBinary = true
 		}
 	}
 
 	// Stage 2: Download prebuilt OS/Arch binary from GitHub Releases and verify SHA-256
 	if !updatedBinary {
-		if err := downloadAndVerifyReleaseBinary(remoteVer); err == nil {
-			sb.WriteString(fmt.Sprintf("[OK] Downloaded and SHA-256 verified release binary `%s` (v%s)\n",
-				releaseAssetName(runtime.GOOS, runtime.GOARCH), remoteVer))
+		if err := downloadAndVerifyReleaseBinary(remoteVer); err != nil {
+			sb.WriteString(fmt.Sprintf("[FAIL] Release binary download failed (%v)\n", err))
+		} else if got := installedBinaryVersion(exePath); got != remoteVer {
+			sb.WriteString(fmt.Sprintf("[FAIL] Installed release binary reports version %q instead of %s\n", got, remoteVer))
 		} else {
-			sb.WriteString(fmt.Sprintf("[INFO] Binary release download skipped (%v)\n", err))
+			sb.WriteString(fmt.Sprintf("[OK] Downloaded and SHA-256 verified release binary `%s` (v%s) into %s\n",
+				releaseAssetName(runtime.GOOS, runtime.GOARCH), remoteVer, exePath))
+			updatedBinary = true
 		}
 	}
 
-	if err := syncSkillsSilent(); err != nil {
-		return sb.String(), err
+	if !updatedBinary {
+		return sb.String(), fmt.Errorf("baton was NOT updated and is still %s (see the reasons above; if the release was tagged just now, retry in a few minutes)", version)
 	}
-	sb.WriteString("[OK] Refreshed SKILL.md and /baton slash command across all installed agents.\n")
+
+	// The new binary carries the new embedded SKILL.md and /baton texts.
+	cmd := exec.Command(exePath, "install")
+	cmd.Env = append(os.Environ(), "BATON_NO_AUTO_UPDATE=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return sb.String(), fmt.Errorf("baton %s installed, but refreshing SKILL.md failed: %v (%s)", remoteVer, err, strings.TrimSpace(string(out)))
+	}
+	sb.WriteString(fmt.Sprintf("[OK] baton %s refreshed SKILL.md and /baton slash command across all installed agents.\n", remoteVer))
 	return sb.String(), nil
+}
+
+func isBatonExecutableName(exePath string) bool {
+	base := strings.ToLower(filepath.Base(exePath))
+	return base == "baton" || base == "baton.exe"
+}
+
+// installedBinaryVersion runs `<exePath> version` and returns the reported
+// version ("0.3.5"), or "" if the binary cannot be executed.
+func installedBinaryVersion(exePath string) string {
+	cmd := exec.Command(exePath, "version")
+	cmd.Env = append(os.Environ(), "BATON_NO_AUTO_UPDATE=1")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		return ""
+	}
+	return strings.TrimPrefix(fields[1], "v")
 }
 
 func downloadAndVerifyReleaseBinary(ver string) error {

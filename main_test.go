@@ -342,7 +342,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 func TestSavedSessionNameCollision(t *testing.T) {
 	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
-	first :=&ParsedSession{Agent: "claude", SessionID: "claude-aaa", PostCompact: []SessionTurn{{Role: "user", Text: "First"}}}
+	first := &ParsedSession{Agent: "claude", SessionID: "claude-aaa", PostCompact: []SessionTurn{{Role: "user", Text: "First"}}}
 	second := &ParsedSession{Agent: "codex", SessionID: "codex-bbb", PostCompact: []SessionTurn{{Role: "user", Text: "Second"}}}
 
 	p1, n1, err := saveSessionToBatonStore(first, "BookTrans")
@@ -363,5 +363,34 @@ func TestSavedSessionNameCollision(t *testing.T) {
 	}
 	if report, err := loadSessionContext("", "BookTrans-2"); err != nil || !strings.Contains(report, "Second") {
 		t.Fatalf("expected BookTrans-2 to load the second session, err=%v report=%s", err, report)
+	}
+}
+
+func TestRemoveSavedSession(t *testing.T) {
+	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	for _, ps := range []*ParsedSession{
+		{Agent: "claude", SessionID: "claude-aaa", SourceFile: "/src/a.jsonl"},
+		{Agent: "codex", SessionID: "codex-bbb", SourceFile: "/src/b.jsonl"},
+	} {
+		if _, _, err := saveSessionToBatonStore(ps, "yudkowsky"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A partial or unknown name must not delete anything
+	if report, err := removeSavedSession("yudk"); err != nil || !strings.Contains(report, "No saved session matched") {
+		t.Fatalf("expected list for a non-exact name, err=%v report=%s", err, report)
+	}
+	if report, err := removeSavedSession("yudkowsky-2"); err != nil || !strings.Contains(report, "Removed saved session **yudkowsky-2**") {
+		t.Fatalf("expected removal by name, err=%v report=%s", err, report)
+	}
+	if aliases := loadAliases(); aliases["/src/b.jsonl"] != "" {
+		t.Fatalf("expected alias of the removed session to be dropped, got %v", aliases)
+	}
+	if report, err := removeSavedSession("1"); err != nil || !strings.Contains(report, "Removed saved session **yudkowsky**") {
+		t.Fatalf("expected removal by number, err=%v report=%s", err, report)
+	}
+	if list := listSessionsReport("", ""); !strings.Contains(list, "No saved Baton sessions found") {
+		t.Fatalf("expected empty store, got: %s", list)
 	}
 }

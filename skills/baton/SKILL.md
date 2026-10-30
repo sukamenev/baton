@@ -24,14 +24,16 @@ When the user asks in plain language (Russian, English, or any language) to cont
 | "Save/name this session auth-refactor" / "Сохрани сессию auth-refactor" | `baton save auth-refactor` |
 | "Push/send this session for my laptop" / "Отправь сессию на другой компьютер" | `baton push` |
 | "Load remote session https://...#key or baton:..." / "Загрузи сессию по ссылке/токену" | `baton load <URL\|token>` |
+| "Delete saved session auth-refactor" / "Удали сохранённую сессию auth-refactor" | `baton rm auth-refactor` (or `baton rm <#>` with the number from `baton list`) |
 | "Clear/delete all saved sessions" / "Очисти/удали все сохранённые сессии" | `baton clear` |
 | "The session was not saved (context/quota ran out), take one of the existing sessions" / "Импортируй сессию" / "Возьми сессию из существующих" | `baton import` |
 | "Import session #2" / "Импортируй вторую сессию" / "Импортируй сессию auth-refactor" | `baton import 2` / `baton import auth-refactor` |
 
-## Rules After Running `baton load` or `baton import`
+## Rules After Running `baton list`, `baton load`, or `baton import`
 
 1. **If `baton` returned a numbered candidate list (`#1`, `#2`, ...):**
-   - Show the numbered candidates to the user so they can pick one, or if #1 clearly matches the current project directory, run `baton load 1` (or `baton import 1` for the `baton import` list).
+   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Reproduce **every** entry exactly as printed: number, agent, name, file, time, working directory, and preview. Do not summarize, regroup, merge, or collapse entries (never write things like "#7–#15: older sessions"), do not drop previews, and do not add your own commentary between entries.
+   - Then ask the user which number or name to load/import, and wait for the answer. Do not pick a session yourself after `baton list` or `baton import`; only after a `baton load` fallback list, if #1 clearly matches the current project directory, you may run `baton load 1` directly.
    - If `baton load` reports that there are no saved sessions (or none of them is the one the user wants), run `baton import` to list raw sessions of all agents and let the user pick one. `baton import <#|name>` saves the chosen session into baton and loads it in one step.
 2. **Check `Handoff Status` at the bottom of the `baton load` output:**
    - If it says `Handoff Status: PARTIAL`, read **every file** listed under `Remaining Active Context Files` in numerical order (`part1`, `part2`, ...), issuing a **separate top-level tool call for each individual file** (never combine multiple part files into a single `cat`/shell command or a single `functions.exec` script, omit `StartLine`/`EndLine` so each part file is read in full without truncation, and in Codex `functions.exec` start the script with `// @exec: {"max_output_tokens": 50000}`) before replying to the user.

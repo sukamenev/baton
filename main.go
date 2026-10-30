@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.4"
+const version = "0.3.5"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -113,6 +113,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(report)
+	case "rm", "delete", "remove":
+		report, err := removeSavedSession(strings.Join(os.Args[2:], " "))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Remove error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(report)
 	case "clear", "clean", "reset":
 		msg, err := clearSavedSessions()
 		if err != nil {
@@ -205,6 +212,7 @@ Usage:
   baton load [name|#|URL|token]     Load the latest saved session in baton, a specific saved session, or a remote URL/token
   baton list                        List saved sessions in baton's local store (#1, #2, ...)
   baton import [#|name]             List raw sessions of all agents, or import one into baton's store and load it
+  baton rm <name|#>                 Delete one saved session from baton's store (# as shown by baton list)
   baton clear                       Delete all locally saved sessions and temporary handoff files in baton
   baton turn <session_id> <turn_id> Print full untruncated output of a specific conversation turn
   baton install                     Install SKILL.md and /baton slash command across all supported agents

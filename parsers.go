@@ -254,6 +254,41 @@ func clearSavedSessions() (string, error) {
 	return fmt.Sprintf("Cleared all locally saved Baton sessions (%d saved session(s) removed).", removed), nil
 }
 
+// removeSavedSession implements `baton rm <name|#>`: deletes one session from Baton's
+// saved store. The number refers to `baton list`; names must match exactly (no
+// substring matching, so a typo never deletes a different session).
+func removeSavedSession(query string) (string, error) {
+	query = strings.TrimSpace(query)
+	saved := discoverSavedBatonSessions("all", "")
+	if query == "" {
+		return "", fmt.Errorf("usage: baton rm <name|#> (numbers as shown by `baton list`)")
+	}
+	var chosen *SessionCandidate
+	if idx, ok := parseCandidateIndex(query, len(saved)); ok {
+		chosen = &saved[idx]
+	}
+	for i := range saved {
+		if chosen == nil && strings.EqualFold(saved[i].Title, query) {
+			chosen = &saved[i]
+		}
+	}
+	if chosen == nil {
+		return formatCandidateListReport("all", query, saved), nil
+	}
+	if err := os.Remove(chosen.Path); err != nil {
+		return "", err
+	}
+	aliases := loadAliases()
+	for path, name := range aliases {
+		if path == chosen.Path || name == chosen.Title {
+			delete(aliases, path)
+		}
+	}
+	_ = saveAliases(aliases)
+	return fmt.Sprintf("Removed saved session **%s** ([%s] `%s`). The original agent session on disk is untouched.",
+		chosen.Title, chosen.Agent, filepath.Base(chosen.Path)), nil
+}
+
 func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 	agent = strings.ToLower(strings.TrimSpace(agent))
 	if agent == "" || agent == "auto" {
