@@ -1,6 +1,6 @@
 # INSTALL.md — AI-Assisted Build & Setup Instructions for `baton`
 
-This file is designed to be read and executed by CLI coding agents (`claude`, `codex`, `agy`, `pi`, `opencode`).
+This file is designed to be read and executed by CLI coding agents (`claude`, `codex`, `agy`, `pi`, `opencode`, `cursor`).
 
 ## Installation Steps
 
@@ -23,7 +23,7 @@ This file is designed to be read and executed by CLI coding agents (`claude`, `c
    ```bash
    ~/.local/bin/baton install
    ```
-   This installs `SKILL.md` into `~/.claude/skills/baton/`, `~/.codex/skills/baton/`, `~/.gemini/config/skills/baton/`, `~/.pi/agent/skills/baton/`, and `~/.config/opencode/skills/baton/`, and registers the `/baton` slash command.
+   This installs `SKILL.md` into `~/.claude/skills/baton/`, `~/.codex/skills/baton/`, `~/.gemini/config/skills/baton/`, `~/.pi/agent/skills/baton/`, `~/.config/opencode/skills/baton/`, and `~/.cursor/skills/baton/`, and registers the `/baton` slash command for Claude Code. Cursor uses the installed skill, which can also be selected from its `/` menu.
 
 4. **Verify installation status:**
    ```bash

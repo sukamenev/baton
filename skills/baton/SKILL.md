@@ -1,16 +1,19 @@
 ---
 name: baton
 description: >-
-  Lossless session handoff across CLI coding agents (claude, codex, agy, pi, opencode)
-  and client-side encrypted session + workspace transfer between machines. Activate
-  this skill whenever the user asks in plain words, in any language, to continue/load/resume a session
-  (by name, from another agent, or the latest session), name a session, list recent
-  sessions, send/push a session to another computer, or load a baton:... token.
+  Save, load, and transfer agent sessions with Baton.
+  Always activate for explicit baton commands or baton: tokens.
+  Also activate when the user explicitly mentions Baton, or asks to
+  save or transfer a session for use in another agent or on another computer.
+  Otherwise, generic requests to find, list, name, save, or resume
+  sessions do not activate this skill.
 ---
 
 # Baton Skill: Cross-Agent & Cross-Machine Session Handoff
 
-When the user asks to continue, list, save, import, or transfer a session, run the corresponding `baton` command via your shell tool.
+Execute explicit `baton` commands as requested via your shell tool.
+The natural-language examples below apply only after this skill is activated;
+they are not independent activation triggers.
 
 The user may write in any language. The phrases in the table below are English examples: match the user's request by meaning, not by wording, and if it means the same as a row, run that row's command.
 
@@ -38,6 +41,8 @@ The user may write in any language. The phrases in the table below are English e
 `baton save` works only with the current session. Never pass it a number or another session; use `baton import <#|id> as <name>` instead.
 
 Note for Codex CLI: if a remote `baton load <URL>` or `baton push` fails due to sandbox network restrictions and permission escalation is rejected by policy, tell the user to run `!baton load "<URL>"` (or `!baton push`) directly in the Codex prompt with a leading exclamation mark `!`, and then type `baton load`.
+
+In Cursor (IDE agent and `agent` CLI), use the installed Baton skill to run the same `baton` commands. The activation conditions above apply in Cursor too.
 
 ## Rules After Running `baton list`, `baton load`, or `baton import`
 

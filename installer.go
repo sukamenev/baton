@@ -30,6 +30,7 @@ func skillTargetPaths(home string) []string {
 		filepath.Join(home, ".gemini", "config", "skills", "baton", "SKILL.md"),
 		filepath.Join(piBaseDir(home), "skills", "baton", "SKILL.md"),
 		filepath.Join(opencodeConfigDir(home), "skills", "baton", "SKILL.md"),
+		filepath.Join(cursorBaseDir(home), "skills", "baton", "SKILL.md"),
 	}
 }
 
@@ -107,6 +108,7 @@ func runStatus() {
 		{"Antigravity Skill (~/.gemini/config/skills/baton/SKILL.md)", filepath.Join(home, ".gemini", "config", "skills", "baton", "SKILL.md")},
 		{"Pi Skill (~/.pi/agent/skills/baton/SKILL.md)", filepath.Join(piBaseDir(home), "skills", "baton", "SKILL.md")},
 		{"OpenCode Skill (~/.config/opencode/skills/baton/SKILL.md)", filepath.Join(opencodeConfigDir(home), "skills", "baton", "SKILL.md")},
+		{"Cursor Skill (~/.cursor/skills/baton/SKILL.md)", filepath.Join(cursorBaseDir(home), "skills", "baton", "SKILL.md")},
 		{"Slash Command /baton (~/.claude/commands/baton.md)", filepath.Join(claudeBaseDir(home), "commands", "baton.md")},
 	}
 
