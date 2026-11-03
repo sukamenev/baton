@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-const version = "0.3.9"
+const version = "0.3.10"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "claude", "codex", "agy", "pi", "hermes", "all", "auto":
+	case "claude", "codex", "agy", "pi", "opencode", "all", "auto":
 		return true
 	}
 	return false
@@ -220,7 +220,7 @@ or if baton is already installed, run:
 }
 
 func printUsage() {
-	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, hermes)
+	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, opencode)
 
 Usage:
   baton save [name]                 Save the current session into baton's local store (defaults to folder name)

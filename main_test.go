@@ -133,7 +133,7 @@ func TestEncryptDecryptAndBackupRoundtrip(t *testing.T) {
 	}
 }
 
-func TestParsePiTreeAndHermesSQLite(t *testing.T) {
+func TestParsePiTreeAndOpenCodeSQLite(t *testing.T) {
 	tmp := t.TempDir()
 
 	// 1. Test Pi v3 tree JSONL (with abandoned branch, session_info name, and compaction details)
@@ -169,54 +169,96 @@ func TestParsePiTreeAndHermesSQLite(t *testing.T) {
 		}
 	}
 
-	// 2. Test Hermes SQLite v32 schema if sqlite3 CLI is available
+	// 2. Deprecated OpenCode 1.x schema (session/message/part), the fallback when
+	// session_v2 is absent. Remove after 2027-04-01 together with parseOpenCodeV1Session.
 	if _, err := exec.LookPath("sqlite3"); err == nil {
-		dbPath := filepath.Join(tmp, "state.db")
+		dbPath := filepath.Join(tmp, "opencode.db")
 		schemaSQL := `
-		CREATE TABLE sessions (
-			id TEXT PRIMARY KEY,
-			parent_session_id TEXT,
-			title TEXT,
-			display_name TEXT,
-			cwd TEXT,
-			started_at REAL,
-			last_activity_at REAL,
-			end_reason TEXT
-		);
-		CREATE TABLE messages (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT,
-			role TEXT,
-			content TEXT,
-			reasoning TEXT,
-			reasoning_content TEXT,
-			tool_name TEXT,
-			tool_calls TEXT,
-			_compressed_summary INTEGER DEFAULT 0,
-			compacted INTEGER DEFAULT 0,
-			active INTEGER DEFAULT 1
-		);
-		INSERT INTO sessions (id, parent_session_id, title, cwd, started_at, last_activity_at, end_reason)
-		VALUES ('s-parent', NULL, 'hermes-migration', '/srv/app', 1700000000, 1700000100, 'compression');
-		INSERT INTO sessions (id, parent_session_id, title, cwd, started_at, last_activity_at, end_reason)
-		VALUES ('s-child', 's-parent', 'hermes-migration', '/srv/app', 1700000101, 1700000200, NULL);
-		INSERT INTO messages (session_id, role, content, _compressed_summary) VALUES ('s-parent', 'user', 'Initial request in parent session', 0);
-		INSERT INTO messages (session_id, role, content, _compressed_summary) VALUES ('s-child', 'system', 'Compressed summary of s-parent', 1);
-		INSERT INTO messages (session_id, role, content, _compressed_summary) VALUES ('s-child', 'user', 'Follow-up after compression in Hermes', 0);
+		CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, title TEXT NOT NULL,
+			time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_archived INTEGER);
+		CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL);
+		CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL);
+		INSERT INTO session VALUES ('ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', NULL, '/srv/app', 'Fix add in calc.py', 1700000000000, 1700000900000, NULL);
+		INSERT INTO session VALUES ('ses_child', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', '/srv/app', 'Subagent task', 1700000100000, 1700000200000, NULL);
+		INSERT INTO message VALUES ('msg_1', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 1, '{"role":"user"}');
+		INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 1, '{"type":"text","text":"Initial request before compaction"}');
+		INSERT INTO message VALUES ('msg_2', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 2, '{"role":"assistant"}');
+		INSERT INTO part VALUES ('prt_2', 'msg_2', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 2, '{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"/srv/app/calc.py","oldString":"a - b","newString":"a + b"},"output":"Edit applied successfully."}}');
+		INSERT INTO message VALUES ('msg_3', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 3, '{"role":"user"}');
+		INSERT INTO part VALUES ('prt_3', 'msg_3', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 3, '{"type":"compaction","auto":true}');
+		INSERT INTO message VALUES ('msg_4', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 4, '{"role":"assistant","summary":true,"mode":"compaction"}');
+		INSERT INTO part VALUES ('prt_4a', 'msg_4', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 4, '{"type":"reasoning","text":"Summarizing"}');
+		INSERT INTO part VALUES ('prt_4b', 'msg_4', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 5, '{"type":"text","text":"## Objective\nFix calc.py"}');
+		INSERT INTO message VALUES ('msg_5', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 6, '{"role":"user","summary":{"diffs":[]}}');
+		INSERT INTO part VALUES ('prt_5', 'msg_5', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 6, '{"type":"text","text":"Now run the tests"}');
+		INSERT INTO message VALUES ('msg_6', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 7, '{"role":"assistant"}');
+		INSERT INTO part VALUES ('prt_6', 'msg_6', 'ses_0b4c9d2e1f3aAbCdEfGhIjKlMn', 7, '{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"python3 -m pytest"},"output":"1 passed"}}');
 		`
 		if out, err := exec.Command("sqlite3", dbPath, schemaSQL).CombinedOutput(); err != nil {
 			t.Fatalf("sqlite3 init failed: %v (%s)", err, string(out))
 		}
-		psHermesDB, err := parseSessionFile("hermes", dbPath+"::s-child", time.Now())
+		candidates := discoverOpenCodeSessions(dbPath, map[string]string{}, "")
+		if len(candidates) != 1 || candidates[0].Title != "Fix add in calc.py" || candidates[0].Preview != "Now run the tests" || candidates[0].CWD != "/srv/app" {
+			t.Fatalf("expected one top-level OpenCode session with the last prompt, got %+v", candidates)
+		}
+		if id := shortSessionID(candidates[0].SessionID()); id != "0b4c9d2e" {
+			t.Fatalf("expected short OpenCode ID 0b4c9d2e, got %q", id)
+		}
+		ps, err := parseSessionFile("opencode", candidates[0].Path, time.Now())
 		if err != nil {
-			t.Fatalf("parseSessionFile hermes sqlite: %v", err)
+			t.Fatalf("parseSessionFile opencode: %v", err)
 		}
-		if psHermesDB.Title != "hermes-migration" || psHermesDB.CompactSummary != "Compressed summary of s-parent" {
-			t.Fatalf("unexpected Hermes SQLite parse: %+v", psHermesDB)
+		if ps.CompactSummary != "## Objective\nFix calc.py" || ps.Title != "Fix add in calc.py" || ps.CWD != "/srv/app" {
+			t.Fatalf("unexpected OpenCode parse: %+v", ps)
 		}
-		if len(psHermesDB.PostCompact) != 1 || !strings.Contains(psHermesDB.PostCompact[0].Text, "Follow-up after compression") {
-			t.Fatalf("unexpected Hermes post-compact turns: %+v", psHermesDB.PostCompact)
+		if len(ps.PostCompact) != 3 || ps.PostCompact[0].Text != "Now run the tests" || ps.PostCompact[2].RawOutput != "1 passed" {
+			t.Fatalf("unexpected OpenCode post-compact turns: %+v", ps.PostCompact)
 		}
+		if len(ps.ModifiedFiles) != 1 || ps.ModifiedFiles[0] != "/srv/app/calc.py" || len(ps.Commands) != 1 || ps.Commands[0] != "python3 -m pytest" {
+			t.Fatalf("unexpected OpenCode files/commands: %v %v", ps.ModifiedFiles, ps.Commands)
+		}
+	}
+}
+
+func TestParseOpenCodeV2(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 CLI is not installed")
+	}
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	const id = "ses_0b4c9d2e1f3aAbCdEfGhIjKlMn"
+	schemaSQL := `
+	CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, title TEXT,
+		time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_archived INTEGER);
+	CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL);
+	INSERT INTO session_v2 VALUES ('` + id + `', NULL, '/srv/app', 'Fix mul in calc2.py', 1, 1700000900000, NULL);
+	INSERT INTO session_v2 VALUES ('ses_child', '` + id + `', '/srv/app', NULL, 1, 1700000200000, NULL);
+	INSERT INTO session_message VALUES ('m1', '` + id + `', 'user', 4, '{"text":"Initial request before compaction","files":[]}');
+	INSERT INTO session_message VALUES ('m2', '` + id + `', 'assistant', 7, '{"content":[{"type":"reasoning","text":"Look at the file"},{"type":"tool","name":"edit","state":{"status":"completed","input":{"path":"/srv/app/calc2.py","oldString":"a + b","newString":"a * b"},"content":[{"type":"text","text":"Edited calc2.py (1 replacement)"}]}}]}');
+	INSERT INTO session_message VALUES ('m3', '` + id + `', 'idle', 8, '{"outcome":"succeeded"}');
+	INSERT INTO session_message VALUES ('m4', '` + id + `', 'compaction', 9, '{"status":"completed","reason":"auto","summary":"## Objective\nFix calc2.py"}');
+	INSERT INTO session_message VALUES ('m5', '` + id + `', 'system', 10, '{"text":"The available tools have changed."}');
+	INSERT INTO session_message VALUES ('m6', '` + id + `', 'user', 11, '{"text":"Now run the tests","files":[]}');
+	INSERT INTO session_message VALUES ('m7', '` + id + `', 'assistant', 12, '{"content":[{"type":"tool","name":"shell","state":{"status":"completed","input":{"command":"python3 -m pytest"},"content":[{"type":"text","text":"1 passed"}]}},{"type":"text","text":"Tests pass."}]}');
+	`
+	if out, err := exec.Command("sqlite3", dbPath, schemaSQL).CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3 init failed: %v (%s)", err, string(out))
+	}
+	candidates := discoverOpenCodeSessions(dbPath, map[string]string{}, "")
+	if len(candidates) != 1 || candidates[0].Title != "Fix mul in calc2.py" || candidates[0].Preview != "Now run the tests" {
+		t.Fatalf("expected one top-level OpenCode 2.x session with the last prompt, got %+v", candidates)
+	}
+	ps, err := parseSessionFile("opencode", candidates[0].Path, time.Now())
+	if err != nil {
+		t.Fatalf("parseSessionFile opencode v2: %v", err)
+	}
+	if ps.CompactSummary != "## Objective\nFix calc2.py" || ps.Title != "Fix mul in calc2.py" || ps.CWD != "/srv/app" {
+		t.Fatalf("unexpected OpenCode 2.x parse: %+v", ps)
+	}
+	if len(ps.PostCompact) != 4 || ps.PostCompact[0].Text != "Now run the tests" || ps.PostCompact[2].RawOutput != "1 passed" || ps.PostCompact[3].Text != "Tests pass." {
+		t.Fatalf("unexpected OpenCode 2.x post-compact turns: %+v", ps.PostCompact)
+	}
+	if len(ps.ModifiedFiles) != 1 || ps.ModifiedFiles[0] != "/srv/app/calc2.py" || len(ps.Commands) != 1 || ps.Commands[0] != "python3 -m pytest" {
+		t.Fatalf("unexpected OpenCode 2.x files/commands: %v %v", ps.ModifiedFiles, ps.Commands)
 	}
 }
 
@@ -269,7 +311,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(tmp, "home"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmp, "claude"))
 	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex"))
-	t.Setenv("HERMES_HOME", filepath.Join(tmp, "hermes"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "xdg-data"))
 	// clearSavedSessions removes os.TempDir()/baton-handoff — keep it away from the real /tmp
 	t.Setenv("TMPDIR", filepath.Join(tmp, "tmp"))
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")

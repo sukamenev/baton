@@ -1,7 +1,7 @@
 ---
 name: baton
 description: >-
-  Lossless session handoff across CLI coding agents (claude, codex, agy, pi, hermes)
+  Lossless session handoff across CLI coding agents (claude, codex, agy, pi, opencode)
   and client-side encrypted session + workspace transfer between machines. Activate
   this skill whenever the user asks in plain words, in any language, to continue/load/resume a session
   (by name, from another agent, or the latest session), name a session, list recent

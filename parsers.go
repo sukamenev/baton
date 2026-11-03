@@ -56,17 +56,17 @@ type SessionCandidate struct {
 var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 // agentSessionID extracts the agent's own session ID from a raw session path:
-// the Hermes id after "::", otherwise the last UUID in the path (Claude/Pi/Codex
-// file name, agy brain directory), otherwise the file name.
+// the OpenCode id after "::" (without its "ses_" prefix), otherwise the last UUID
+// in the path (Claude/Pi/Codex file name, agy brain directory), otherwise the file name.
 func agentSessionID(path string) string {
 	if _, id, ok := strings.Cut(path, "::"); ok {
-		return id
+		return strings.TrimPrefix(id, "ses_")
 	}
 	if all := uuidPattern.FindAllString(path, -1); len(all) > 0 {
 		return strings.ToLower(all[len(all)-1])
 	}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	return strings.TrimPrefix(base, "session_")
+	return strings.TrimPrefix(base, "ses_")
 }
 
 func (c SessionCandidate) SessionID() string {
@@ -76,10 +76,9 @@ func (c SessionCandidate) SessionID() string {
 	return agentSessionID(c.Path)
 }
 
-// shortSessionID is the ID shown in lists: the first 8 characters of a UUID,
-// or the whole ID otherwise (Hermes IDs start with a date and are not unique by prefix).
+// shortSessionID is the ID shown in lists: its first 8 characters.
 func shortSessionID(id string) string {
-	if uuidPattern.MatchString(id) && len(id) > 8 {
+	if len(id) > 8 {
 		return id[:8]
 	}
 	return id
@@ -127,19 +126,19 @@ func piBaseDir(home string) string {
 	return filepath.Join(home, ".pi", "agent")
 }
 
-func hermesBaseDir(home string) string {
-	if env := os.Getenv("HERMES_HOME"); env != "" {
-		return env
+// OpenCode follows XDG paths on every OS (~/.local/share, ~/.config), macOS and Windows included.
+func opencodeDBPath(home string) string {
+	if env := os.Getenv("XDG_DATA_HOME"); env != "" {
+		return filepath.Join(env, "opencode", "opencode.db")
 	}
-	if runtime.GOOS == "windows" {
-		if localApp := os.Getenv("LOCALAPPDATA"); localApp != "" {
-			cand := filepath.Join(localApp, "hermes")
-			if _, err := os.Stat(cand); err == nil {
-				return cand
-			}
-		}
+	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+}
+
+func opencodeConfigDir(home string) string {
+	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
+		return filepath.Join(env, "opencode")
 	}
-	return filepath.Join(home, ".hermes")
+	return filepath.Join(home, ".config", "opencode")
 }
 
 func agyBaseDirs(home string) []string {
@@ -462,8 +461,8 @@ func detectCallerAgent() string {
 	if os.Getenv("PI_CODING_AGENT_DIR") != "" || os.Getenv("PI_SESSION_ID") != "" {
 		return "pi"
 	}
-	if os.Getenv("HERMES_SESSION_ID") != "" {
-		return "hermes"
+	if os.Getenv("OPENCODE") != "" {
+		return "opencode"
 	}
 	if os.Getenv("ANTIGRAVITY_CLI") != "" {
 		return "agy"
@@ -480,8 +479,8 @@ func detectCallerAgent() string {
 				return "codex"
 			case strings.Contains(envStr, "PI_SESSION_ID="):
 				return "pi"
-			case strings.Contains(envStr, "HERMES_SESSION_ID="):
-				return "hermes"
+			case strings.Contains(envStr, "\x00OPENCODE="):
+				return "opencode"
 			case strings.Contains(envStr, "ANTIGRAVITY_CLI="):
 				return "agy"
 			}
@@ -492,14 +491,14 @@ func detectCallerAgent() string {
 		}
 		lower := strings.ToLower(string(bytes.ReplaceAll(cmdline, []byte{0}, []byte{' '})))
 		switch {
+		case strings.Contains(lower, "opencode"):
+			return "opencode"
 		case strings.Contains(lower, "claude"):
 			return "claude"
 		case strings.Contains(lower, "codex"):
 			return "codex"
 		case strings.Contains(lower, "antigravity") || strings.Contains(lower, "/agy ") || strings.HasSuffix(strings.TrimSpace(lower), "/agy"):
 			return "agy"
-		case strings.Contains(lower, "hermes"):
-			return "hermes"
 		}
 		statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 		if err != nil {
@@ -736,7 +735,7 @@ const importListLimit = 15
 // not something to import).
 func isCallerOwnSession(path string) bool {
 	base := filepath.Base(path)
-	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "HERMES_SESSION_ID"} {
+	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"} {
 		if id := strings.TrimSpace(os.Getenv(env)); id != "" && strings.Contains(base, id) {
 			return true
 		}
@@ -1169,21 +1168,8 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		}
 	}
 
-	if agent == "all" || agent == "hermes" {
-		hBase := hermesBaseDir(home)
-		for _, sub := range []string{"sessions", "trajectories"} {
-			hRoot := filepath.Join(hBase, sub)
-			_ = filepath.WalkDir(hRoot, func(path string, d fs.DirEntry, err error) error {
-				if err == nil && !d.IsDir() && (strings.HasSuffix(path, ".jsonl") || strings.HasSuffix(path, ".json")) {
-					addFile("hermes", path, "", "")
-				}
-				return nil
-			})
-		}
-		for _, dbPath := range discoverHermesDBPaths(home, hBase) {
-			dbCandidates := discoverHermesSQLiteSessions(dbPath, aliases, query)
-			all = append(all, dbCandidates...)
-		}
+	if agent == "all" || agent == "opencode" {
+		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), aliases, query)...)
 	}
 
 	// Include sessions imported from remote URLs via `baton load <URL>`
@@ -1192,7 +1178,7 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		for _, m := range importFiles {
 			ag := "imported"
 			base := filepath.Base(m)
-			for _, known := range []string{"claude", "codex", "agy", "pi", "hermes"} {
+			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode"} {
 				if strings.HasPrefix(base, known+"-") {
 					ag = known
 					break
@@ -1240,106 +1226,91 @@ func discoverSessions(agent, query string) []SessionCandidate {
 	return all
 }
 
-func discoverHermesDBPaths(home, hBase string) []string {
-	var paths []string
-	seen := make(map[string]bool)
-	addDB := func(p string) {
-		if !seen[p] {
-			if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Size() > 0 {
-				seen[p] = true
-				paths = append(paths, p)
-			}
-		}
+// opencodeSQL runs a read-only query against OpenCode's SQLite database through the
+// sqlite3 CLI (baton has no Go dependencies) and decodes its JSON rows.
+func opencodeSQL(dbPath, query string, rows interface{}) error {
+	out, err := exec.Command("sqlite3", "-readonly", "-json", dbPath, query).Output()
+	if err != nil {
+		return err
 	}
-	for _, name := range []string{"state.db", "history.db"} {
-		addDB(filepath.Join(hBase, name))
-		addDB(filepath.Join(home, ".hermes", name))
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil
 	}
-	if profMatches, err := filepath.Glob(filepath.Join(hBase, "profiles", "*", "state.db")); err == nil {
-		for _, m := range profMatches {
-			addDB(m)
-		}
-	}
-	if runtime.GOOS == "windows" {
-		for _, env := range []string{"LOCALAPPDATA", "APPDATA"} {
-			if v := os.Getenv(env); v != "" {
-				addDB(filepath.Join(v, "hermes", "state.db"))
-			}
-		}
-	}
-	return paths
+	return json.Unmarshal(out, rows)
 }
 
-func discoverHermesSQLiteSessions(dbPath string, aliases map[string]string, query string) []SessionCandidate {
+func sqlQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// opencodeHasV2 reports whether the database uses the OpenCode 2.x schema
+// (session_v2 + session_message); OpenCode migrates 1.x sessions into it.
+func opencodeHasV2(dbPath string) bool {
+	var rows []struct {
+		N int `json:"n"`
+	}
+	err := opencodeSQL(dbPath, "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'session_v2';", &rows)
+	return err == nil && len(rows) == 1 && rows[0].N > 0
+}
+
+// opencodeSessionsSQL lists top-level sessions (subagent sessions have a parent_id)
+// with the last user prompt.
+const opencodeSessionsSQL = `SELECT s.id, COALESCE(s.title, '') AS title, s.directory, s.time_updated,
+        COALESCE((SELECT json_extract(m.data, '$.text') FROM session_message m
+                  WHERE m.session_id = s.id AND m.type = 'user' ORDER BY m.seq DESC LIMIT 1), '') AS prompt
+        FROM session_v2 s WHERE s.parent_id IS NULL AND s.time_archived IS NULL
+        ORDER BY s.time_updated DESC LIMIT 50;`
+
+// Deprecated: OpenCode 1.x schema (session/message/part tables), used only when
+// session_v2 is absent. Remove after 2027-04-01.
+const opencodeV1SessionsSQL = `SELECT s.id, s.title, s.directory, s.time_updated,
+        COALESCE((SELECT json_extract(p.data, '$.text') FROM part p JOIN message m ON m.id = p.message_id
+                  WHERE p.session_id = s.id AND json_extract(m.data, '$.role') = 'user'
+                    AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.synthetic'), 0) = 0
+                  ORDER BY p.time_created DESC, p.id DESC LIMIT 1), '') AS prompt
+        FROM session s WHERE s.parent_id IS NULL AND s.time_archived IS NULL
+        ORDER BY s.time_updated DESC LIMIT 50;`
+
+// discoverOpenCodeSessions lists top-level OpenCode sessions with the last user prompt as preview.
+func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query string) []SessionCandidate {
+	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+		return nil
+	}
+	var rows []struct {
+		ID      string `json:"id"`
+		Title   string `json:"title"`
+		CWD     string `json:"directory"`
+		Updated int64  `json:"time_updated"`
+		Prompt  string `json:"prompt"`
+	}
+	sessionsSQL := opencodeSessionsSQL
+	if !opencodeHasV2(dbPath) {
+		sessionsSQL = opencodeV1SessionsSQL // Deprecated: remove after 2027-04-01
+	}
+	if err := opencodeSQL(dbPath, sessionsSQL, &rows); err != nil {
+		return nil
+	}
 	var out []SessionCandidate
-	info, err := os.Stat(dbPath)
-	if err != nil {
-		return out
-	}
-
-	sql := `SELECT s.id, COALESCE(s.title, s.display_name, ''), COALESCE(s.cwd, ''), COALESCE(s.last_activity_at, s.started_at, 0),
-	        COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1), '')
-	        FROM sessions s ORDER BY COALESCE(s.last_activity_at, s.started_at, 0) DESC LIMIT 25;`
-	raw, err := exec.Command("sqlite3", "-json", dbPath, sql).Output()
-	if err == nil && len(raw) > 0 {
-		var rows []map[string]interface{}
-		if json.Unmarshal(raw, &rows) == nil && len(rows) > 0 {
-			for _, r := range rows {
-				var id, title, cwd, preview string
-				var ts float64
-				for k, v := range r {
-					kl := strings.ToLower(k)
-					switch {
-					case kl == "id":
-						id, _ = v.(string)
-					case strings.Contains(kl, "title"):
-						title, _ = v.(string)
-					case strings.Contains(kl, "cwd"):
-						cwd, _ = v.(string)
-					case strings.Contains(kl, "last_activity") || strings.Contains(kl, "started_at"):
-						ts, _ = v.(float64)
-					default:
-						if s, ok := v.(string); ok && preview == "" {
-							preview = truncateInline(s, 140)
-						}
-					}
-				}
-				if id == "" {
-					continue
-				}
-				virtualPath := dbPath + "::" + id
-				if a := aliases[virtualPath]; a != "" {
-					title = a
-				}
-				modTime := info.ModTime()
-				if ts > 1e9 {
-					modTime = time.Unix(int64(ts), 0)
-				}
-				if query != "" && !candidateMatchesQuery(virtualPath, title, preview, query) {
-					continue
-				}
-				out = append(out, SessionCandidate{
-					Agent:   "hermes",
-					Path:    virtualPath,
-					Title:   title,
-					CWD:     cwd,
-					ModTime: modTime,
-					Preview: preview,
-				})
-			}
-			return out
+	for _, r := range rows {
+		virtualPath := dbPath + "::" + r.ID
+		title := r.Title
+		if a := aliases[virtualPath]; a != "" {
+			title = a
 		}
-	}
-
-	// Fallback if sessions table is absent or sqlite3 CLI is unavailable
-	title := aliases[dbPath]
-	if query == "" || candidateMatchesQuery(dbPath, title, "Hermes SQLite database", query) {
+		preview := ""
+		if txt := cleanUserPrompt(r.Prompt); txt != "" {
+			preview = truncateInline(txt, 140)
+		}
+		if query != "" && !candidateMatchesQuery(virtualPath, title, preview, query) {
+			continue
+		}
 		out = append(out, SessionCandidate{
-			Agent:   "hermes",
-			Path:    dbPath,
+			Agent:   "opencode",
+			Path:    virtualPath,
 			Title:   title,
-			ModTime: info.ModTime(),
-			Preview: "Hermes SQLite session database (" + filepath.Base(dbPath) + ")",
+			CWD:     r.CWD,
+			ModTime: time.UnixMilli(r.Updated),
+			Preview: preview,
 		})
 	}
 	return out
@@ -1569,15 +1540,8 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 		return ps, nil
 	}
 
-	if strings.HasSuffix(realPath, ".db") || strings.HasSuffix(realPath, ".sqlite") {
-		if err := parseHermesSQLiteSession(realPath, explicitSessionID, ps); err != nil {
-			return nil, err
-		}
-		return ps, nil
-	}
-
-	if strings.HasSuffix(realPath, ".json") && agent == "hermes" {
-		if err := parseHermesJSONFile(realPath, ps); err != nil {
+	if strings.HasSuffix(realPath, ".db") {
+		if err := parseOpenCodeSession(realPath, explicitSessionID, ps); err != nil {
 			return nil, err
 		}
 		return ps, nil
@@ -2137,212 +2101,232 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 	return nil
 }
 
-func parseHermesJSONFile(path string, ps *ParsedSession) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
+// parseOpenCodeSession reads one OpenCode session from the 2.x schema: session_message
+// rows ordered by seq, typed user / assistant / compaction (plus internal system and
+// idle rows). Assistant content holds text, reasoning, and tool calls; a completed
+// compaction row (manual /compact or automatic) carries the summary.
+func parseOpenCodeSession(dbPath, sessionID string, ps *ParsedSession) error {
+	if sessionID == "" {
+		return fmt.Errorf("OpenCode session ID is missing in %s", dbPath)
+	}
+	if !opencodeHasV2(dbPath) {
+		return parseOpenCodeV1Session(dbPath, sessionID, ps) // Deprecated: remove after 2027-04-01
+	}
+	var meta []struct {
+		Title string `json:"title"`
+		CWD   string `json:"directory"`
+	}
+	if err := opencodeSQL(dbPath, "SELECT COALESCE(title, '') AS title, directory FROM session_v2 WHERE id = "+sqlQuote(sessionID)+";", &meta); err != nil {
+		return fmt.Errorf("failed to read OpenCode database %s (is sqlite3 installed?): %w", dbPath, err)
+	}
+	if len(meta) == 0 {
+		return fmt.Errorf("OpenCode session %s not found in %s", sessionID, dbPath)
+	}
+	ps.Title = meta[0].Title
+	ps.CWD = meta[0].CWD
+
+	var rows []struct {
+		Type string `json:"type"`
+		Data string `json:"data"`
+	}
+	if err := opencodeSQL(dbPath, "SELECT type, data FROM session_message WHERE session_id = "+sqlQuote(sessionID)+" ORDER BY seq;", &rows); err != nil {
 		return err
 	}
-	var root map[string]interface{}
-	if err := json.Unmarshal(data, &root); err != nil {
-		return parseCodexOrGenericJSONL(path, ps)
-	}
-	if t, _ := root["title"].(string); t != "" {
-		ps.Title = t
-	}
-	if c, _ := root["cwd"].(string); c != "" {
-		ps.CWD = c
-	}
-	msgs, ok := root["messages"].([]interface{})
-	if !ok {
-		return nil
-	}
+
 	modSet := make(map[string]bool)
 	turnID := 0
-	for _, m := range msgs {
-		obj, _ := m.(map[string]interface{})
-		role, _ := obj["role"].(string)
-		content := extractContentText(obj["content"])
-		if isComp, _ := obj["_compressed_summary"].(float64); isComp == 1 {
-			ps.PreCompactTurns = turnID
-			ps.CompactSummary = content
-			ps.PostCompact = nil
-			continue
-		}
-		if tcs, ok := obj["tool_calls"].([]interface{}); ok {
-			for _, tc := range tcs {
-				tcMap, _ := tc.(map[string]interface{})
-				fn, _ := tcMap["function"].(map[string]interface{})
-				name, _ := fn["name"].(string)
-				argsStr, _ := fn["arguments"].(string)
-				var argsMap map[string]interface{}
-				_ = json.Unmarshal([]byte(argsStr), &argsMap)
-				recordToolSideEffects(name, argsMap, modSet, &ps.Commands)
-			}
-		}
-		if strings.TrimSpace(content) == "" {
-			continue
-		}
+	addTurn := func(t SessionTurn) {
 		turnID++
-		t := SessionTurn{TurnID: turnID, Role: role, Text: content}
+		t.TurnID = turnID
 		ps.AllTurns = append(ps.AllTurns, t)
 		ps.PostCompact = append(ps.PostCompact, t)
+	}
+	for _, r := range rows {
+		var msg struct {
+			Text    string `json:"text"`
+			Status  string `json:"status"`
+			Summary string `json:"summary"`
+			Content []struct {
+				Type  string `json:"type"`
+				Text  string `json:"text"`
+				Name  string `json:"name"`
+				State struct {
+					Status  string                 `json:"status"`
+					Input   map[string]interface{} `json:"input"`
+					Error   string                 `json:"error"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"state"`
+			} `json:"content"`
+		}
+		if json.Unmarshal([]byte(r.Data), &msg) != nil {
+			continue
+		}
+		switch r.Type {
+		case "user":
+			if strings.TrimSpace(msg.Text) != "" {
+				addTurn(SessionTurn{Role: "user", Text: msg.Text})
+			}
+		case "compaction":
+			if msg.Status == "completed" && strings.TrimSpace(msg.Summary) != "" {
+				ps.PreCompactTurns = turnID
+				ps.CompactSummary = strings.TrimSpace(msg.Summary)
+				ps.PostCompact = nil
+			}
+		case "assistant":
+			for _, c := range msg.Content {
+				switch c.Type {
+				case "text":
+					if strings.TrimSpace(c.Text) != "" {
+						addTurn(SessionTurn{Role: "assistant", Text: c.Text})
+					}
+				case "reasoning":
+					if strings.TrimSpace(c.Text) != "" {
+						addTurn(SessionTurn{Role: "assistant_thinking", Text: c.Text})
+					}
+				case "tool":
+					args, _ := json.Marshal(c.State.Input)
+					recordToolSideEffects(c.Name, c.State.Input, modSet, &ps.Commands)
+					addTurn(SessionTurn{
+						Role:      "tool_use",
+						ToolName:  c.Name,
+						Text:      fmt.Sprintf("Call `%s`: %s", c.Name, truncateInline(string(args), 300)),
+						RawOutput: fmt.Sprintf("Call `%s`: %s", c.Name, args),
+					})
+					var out []string
+					for _, oc := range c.State.Content {
+						out = append(out, oc.Text)
+					}
+					output := strings.Join(out, "\n")
+					if c.State.Status == "error" && c.State.Error != "" {
+						output = "Error: " + c.State.Error
+					}
+					if strings.TrimSpace(output) != "" {
+						addTurn(SessionTurn{
+							Role:      "tool_result",
+							ToolName:  c.Name,
+							Text:      summarizeToolOutput(output),
+							RawOutput: output,
+						})
+					}
+				}
+			}
+		}
 	}
 	ps.ModifiedFiles = sortedKeys(modSet)
 	return nil
 }
 
-// parseHermesSQLiteSession queries Hermes Agent's SQLite schema (v32, NousResearch/hermes-agent).
-// It walks parent_session_id compression lineage and extracts _compressed_summary checkpoints,
-// reasoning, tool_calls, and active messages.
-func parseHermesSQLiteSession(path, targetSessionID string, ps *ParsedSession) error {
-	if targetSessionID == "" {
-		qLatest := "SELECT id FROM sessions ORDER BY COALESCE(last_activity_at, started_at, 0) DESC LIMIT 1;"
-		out, err := exec.Command("sqlite3", path, qLatest).Output()
-		if err == nil && strings.TrimSpace(string(out)) != "" {
-			targetSessionID = strings.TrimSpace(string(out))
-		}
+// Deprecated: parseOpenCodeV1Session reads the OpenCode 1.x schema and is used only
+// when session_v2 is absent. Remove after 2027-04-01.
+//
+// In 1.x, messages hold the role and parts hold text, reasoning, and tool calls.
+// Compaction is a user message with a "compaction" part followed by an assistant
+// message with "summary": true whose text is the summary.
+func parseOpenCodeV1Session(dbPath, sessionID string, ps *ParsedSession) error {
+	var meta []struct {
+		Title string `json:"title"`
+		CWD   string `json:"directory"`
+	}
+	if err := opencodeSQL(dbPath, "SELECT title, directory FROM session WHERE id = "+sqlQuote(sessionID)+";", &meta); err != nil {
+		return fmt.Errorf("failed to read OpenCode database %s (is sqlite3 installed?): %w", dbPath, err)
+	}
+	if len(meta) == 0 {
+		return fmt.Errorf("OpenCode session %s not found in %s", sessionID, dbPath)
+	}
+	ps.Title = meta[0].Title
+	ps.CWD = meta[0].CWD
+
+	var rows []struct {
+		Message string `json:"mdata"`
+		Part    string `json:"pdata"`
+	}
+	err := opencodeSQL(dbPath, `SELECT m.data AS mdata, COALESCE(p.data, '') AS pdata
+	        FROM message m LEFT JOIN part p ON p.message_id = m.id
+	        WHERE m.session_id = `+sqlQuote(sessionID)+`
+	        ORDER BY m.time_created, m.id, p.time_created, p.id;`, &rows)
+	if err != nil {
+		return err
 	}
 
-	// Collect session lineage (oldest ancestor -> targetSessionID) if compressed/split
-	var sessionChain []string
-	if targetSessionID != "" {
-		curr := targetSessionID
-		seen := make(map[string]bool)
-		for curr != "" && !seen[curr] {
-			seen[curr] = true
-			sessionChain = append([]string{curr}, sessionChain...)
-			safeCurr := strings.ReplaceAll(curr, "'", "''")
-			metaSQL := fmt.Sprintf("SELECT COALESCE(parent_session_id, ''), COALESCE(title, display_name, ''), COALESCE(cwd, '') FROM sessions WHERE id = '%s' LIMIT 1;", safeCurr)
-			out, err := exec.Command("sqlite3", "-json", path, metaSQL).Output()
-			if err != nil || len(out) == 0 {
-				break
+	modSet := make(map[string]bool)
+	turnID := 0
+	addTurn := func(t SessionTurn) {
+		turnID++
+		t.TurnID = turnID
+		ps.AllTurns = append(ps.AllTurns, t)
+		ps.PostCompact = append(ps.PostCompact, t)
+	}
+	for _, r := range rows {
+		// "summary" is true on the compaction summary message but an object
+		// ({"diffs":[...]}) on user messages, so it is checked as raw JSON.
+		var msg struct {
+			Role    string          `json:"role"`
+			Summary json.RawMessage `json:"summary"`
+		}
+		var part struct {
+			Type      string   `json:"type"`
+			Text      string   `json:"text"`
+			Synthetic bool     `json:"synthetic"`
+			Tool      string   `json:"tool"`
+			Files     []string `json:"files"`
+			State     struct {
+				Status string                 `json:"status"`
+				Input  map[string]interface{} `json:"input"`
+				Output string                 `json:"output"`
+				Error  string                 `json:"error"`
+			} `json:"state"`
+		}
+		if json.Unmarshal([]byte(r.Message), &msg) != nil || json.Unmarshal([]byte(r.Part), &part) != nil {
+			continue
+		}
+		if string(msg.Summary) == "true" {
+			if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+				ps.PreCompactTurns = turnID
+				ps.CompactSummary = strings.TrimSpace(part.Text)
+				ps.PostCompact = nil
 			}
-			var metaRows []map[string]interface{}
-			if json.Unmarshal(out, &metaRows) != nil || len(metaRows) == 0 {
-				break
+			continue
+		}
+		switch part.Type {
+		case "text":
+			if strings.TrimSpace(part.Text) != "" && !part.Synthetic {
+				addTurn(SessionTurn{Role: msg.Role, Text: part.Text})
 			}
-			parent := ""
-			for k, v := range metaRows[0] {
-				kl := strings.ToLower(k)
-				s, _ := v.(string)
-				switch {
-				case strings.Contains(kl, "parent"):
-					parent = s
-				case strings.Contains(kl, "title") && ps.Title == "" && s != "":
-					ps.Title = s
-				case strings.Contains(kl, "cwd") && ps.CWD == "" && s != "":
-					ps.CWD = s
-				}
+		case "reasoning":
+			if strings.TrimSpace(part.Text) != "" {
+				addTurn(SessionTurn{Role: "assistant_thinking", Text: part.Text})
 			}
-			curr = parent
+		case "tool":
+			args, _ := json.Marshal(part.State.Input)
+			recordToolSideEffects(part.Tool, part.State.Input, modSet, &ps.Commands)
+			addTurn(SessionTurn{
+				Role:      "tool_use",
+				ToolName:  part.Tool,
+				Text:      fmt.Sprintf("Call `%s`: %s", part.Tool, truncateInline(string(args), 300)),
+				RawOutput: fmt.Sprintf("Call `%s`: %s", part.Tool, args),
+			})
+			output := part.State.Output
+			if part.State.Status == "error" && part.State.Error != "" {
+				output = "Error: " + part.State.Error
+			}
+			if strings.TrimSpace(output) != "" {
+				addTurn(SessionTurn{
+					Role:      "tool_result",
+					ToolName:  part.Tool,
+					Text:      summarizeToolOutput(output),
+					RawOutput: output,
+				})
+			}
+		case "patch":
+			for _, f := range part.Files {
+				modSet[f] = true
+			}
 		}
 	}
-
-	var whereClause string
-	if len(sessionChain) > 0 {
-		quoted := make([]string, len(sessionChain))
-		for i, id := range sessionChain {
-			quoted[i] = "'" + strings.ReplaceAll(id, "'", "''") + "'"
-		}
-		whereClause = "WHERE session_id IN (" + strings.Join(quoted, ",") + ")"
-	} else {
-		whereClause = "WHERE session_id = (SELECT session_id FROM messages ORDER BY id DESC LIMIT 1)"
-	}
-
-	query := fmt.Sprintf(`SELECT role, COALESCE(content, '') AS content,
-	        COALESCE(reasoning, reasoning_content, '') AS reasoning,
-	        COALESCE(tool_name, '') AS tool_name,
-	        COALESCE(tool_calls, '') AS tool_calls,
-	        COALESCE(_compressed_summary, 0) AS is_summary
-	        FROM messages %s ORDER BY id ASC;`, whereClause)
-
-	out, err := exec.Command("sqlite3", "-json", path, query).Output()
-	if err == nil && len(out) > 0 {
-		var rows []struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
-			Reasoning string `json:"reasoning"`
-			ToolName  string `json:"tool_name"`
-			ToolCalls string `json:"tool_calls"`
-			IsSummary int    `json:"is_summary"`
-		}
-		if json.Unmarshal(out, &rows) == nil && len(rows) > 0 {
-			modSet := make(map[string]bool)
-			turnID := 0
-			addTurn := func(t SessionTurn) {
-				turnID++
-				t.TurnID = turnID
-				ps.AllTurns = append(ps.AllTurns, t)
-				ps.PostCompact = append(ps.PostCompact, t)
-			}
-			for _, r := range rows {
-				if r.IsSummary == 1 || strings.Contains(r.Content, "<compact_summary>") {
-					ps.PreCompactTurns = turnID
-					ps.CompactSummary = strings.TrimSpace(r.Content)
-					ps.PostCompact = nil
-					continue
-				}
-				if strings.TrimSpace(r.Reasoning) != "" {
-					addTurn(SessionTurn{Role: "assistant_thinking", Text: r.Reasoning})
-				}
-				if strings.TrimSpace(r.ToolCalls) != "" {
-					var tcs []map[string]interface{}
-					if json.Unmarshal([]byte(r.ToolCalls), &tcs) == nil {
-						for _, tc := range tcs {
-							fn, _ := tc["function"].(map[string]interface{})
-							name, _ := fn["name"].(string)
-							if name == "" {
-								name, _ = tc["name"].(string)
-							}
-							argsStr, _ := fn["arguments"].(string)
-							var argsMap map[string]interface{}
-							_ = json.Unmarshal([]byte(argsStr), &argsMap)
-							recordToolSideEffects(name, argsMap, modSet, &ps.Commands)
-							addTurn(SessionTurn{
-								Role:      "tool_use",
-								ToolName:  name,
-								Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(argsStr, 300)),
-								RawOutput: fmt.Sprintf("Call `%s`: %s", name, argsStr),
-							})
-						}
-					}
-				}
-				if strings.TrimSpace(r.Content) != "" {
-					if r.Role == "tool" {
-						addTurn(SessionTurn{
-							Role:      "tool_result",
-							ToolName:  r.ToolName,
-							Text:      summarizeToolOutput(r.Content),
-							RawOutput: r.Content,
-						})
-					} else {
-						addTurn(SessionTurn{Role: r.Role, Text: r.Content})
-					}
-				}
-			}
-			ps.ModifiedFiles = sortedKeys(modSet)
-			return nil
-		}
-	}
-
-	// Fallback if older schema without v32 columns
-	simpleQuery := "SELECT role, content FROM messages WHERE session_id = (SELECT session_id FROM messages ORDER BY id DESC LIMIT 1) ORDER BY id ASC;"
-	outSimple, err := exec.Command("sqlite3", "-json", path, simpleQuery).Output()
-	if err == nil && len(outSimple) > 0 {
-		var rows []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if json.Unmarshal(outSimple, &rows) == nil && len(rows) > 0 {
-			for i, r := range rows {
-				t := SessionTurn{TurnID: i + 1, Role: r.Role, Text: r.Content}
-				ps.AllTurns = append(ps.AllTurns, t)
-				ps.PostCompact = append(ps.PostCompact, t)
-			}
-			return nil
-		}
-	}
-	return parseProtobufSession(path, ps)
+	ps.ModifiedFiles = sortedKeys(modSet)
+	return nil
 }
 
 func parseProtobufSession(path string, ps *ParsedSession) error {
@@ -2428,7 +2412,7 @@ func recordToolSideEffects(name string, input map[string]interface{}, modSet map
 			}
 		}
 	}
-	for _, k := range []string{"file_path", "path", "Path", "target_file", "TargetFile"} {
+	for _, k := range []string{"file_path", "filePath", "path", "Path", "target_file", "TargetFile"} {
 		if p, ok := input[k].(string); ok && strings.TrimSpace(p) != "" {
 			if strings.Contains(lower, "edit") || strings.Contains(lower, "write") || strings.Contains(lower, "replace") || strings.Contains(lower, "create") || strings.Contains(lower, "patch") {
 				modSet[p] = true
