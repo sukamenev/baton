@@ -7,7 +7,7 @@
 
 ![baton — Lossless Session Handoff Across CLI Coding Agents](images/baton.png)
 
-`baton` is a zero-dependency Go CLI tool and `SKILL.md` agent skill for **Linux, macOS, and Windows** that passes session context between **Claude Code (`claude`)**, **OpenAI Codex CLI (`codex`)**, **Antigravity CLI (`agy`)**, **Pi (`pi`)**, and **OpenCode (`opencode`)** without losing history when 5-hour quota limits run out — or transfers an active local session (along with uncommitted files and rule configs) to another laptop with client-side **AES-256-GCM** encryption.
+`baton` is a zero-dependency Go CLI tool and `SKILL.md` agent skill for **Linux, macOS, and Windows** that passes session context between **Claude Code (`claude`)**, **OpenAI Codex CLI (`codex`)**, **Antigravity CLI (`agy`)**, **Pi (`pi`)**, **OpenCode (`opencode`)**, and **Cursor (`cursor`, IDE agent and `agent` CLI)** without losing history when 5-hour quota limits run out — or transfers an active local session (along with uncommitted files and rule configs) to another laptop with client-side **AES-256-GCM** encryption.
 
 Unlike always-on MCP servers that stay resident in memory and inject tool schemas into every conversation's system prompt, `baton` uses **progressive skill loading (`SKILL.md`) + one-shot CLI execution**: zero background daemons, zero idle token overhead, and 20ms execution only when you actually hand off a session.
 
@@ -27,9 +27,9 @@ The common advice for switching agents is to ask the current model to write a `H
 ┌──────────────────────┐       Raw Disk Logs (.jsonl / .pb / .db)      ┌──────────────────────┐
 │  Claude / Codex /    │ ────────────────────────────────────────────► │        baton         │
 │ AGY / Pi / OpenCode  │   1. Locate latest /compact checkpoint        │ (One-Shot Go CLI +   │
-│  (Quota Exhausted)   │   2. Unpack full log -> /tmp/baton-handoff/   │      SKILL.md)       │
-└──────────────────────┘   3. Print compact summary + file manifest    └──────────┬───────────┘
-                                                                                  │
+│  / Cursor            │   2. Unpack full log -> /tmp/baton-handoff/   │      SKILL.md)       │
+│  (Quota Exhausted)   │   3. Print compact summary + file manifest    └──────────┬───────────┘
+└──────────────────────┘                                                          │
                                                                                   ▼
                                                                        ┌──────────────────────┐
                                                                        │   Next CLI Agent     │
@@ -49,6 +49,7 @@ The common advice for switching agents is to ask the current model to write a `H
 | **Antigravity CLI** (`agy`) | `~/.gemini/antigravity-cli/brain/<uuid>/.../transcript.jsonl` & `conversations/*.pb` | JSONL & schema-less Protobuf wire format | `CHECKPOINT` / embedded summary block |
 | **Pi** (`pi`) | `~/.pi/agent/sessions/--<cwd-slug>--/<ts>_<id>.jsonl` (`$PI_CODING_AGENT_DIR`) | v3 Tree JSONL (`id`, `parentId`, `session_info`, `bashExecution`) | `type: "compaction"` (`firstKeptEntryId`, `details.modifiedFiles`) |
 | **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` on every OS (`$XDG_DATA_HOME`) | SQLite (`session_v2` + `session_message` tables in OpenCode 2.x; `session`/`message`/`part` in 1.x), read via the `sqlite3` command | `compaction` message with `summary` (manual `/compact` and auto-compaction) |
+| **Cursor** (`cursor`) | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` (IDE and `agent` CLI). Title and folder: `~/.cursor/chats/<workspace>/<uuid>/meta.json` | JSONL (`role` + `message.content` `text` / `tool_use`) | `compaction/segment_*.md` beside the jsonl (curated summary + verbatim turns). The jsonl is the post-compaction tail |
 
 > **Using DeepSeek, GLM, Grok, or Ollama?** Most developers run those models inside **Pi** or **OpenCode**. Because `baton` natively supports both `pi` and `opencode`, you can hand off a session from a $20 Claude/Codex subscription directly to DeepSeek V3/R1, GLM, or Grok.
 
@@ -59,14 +60,14 @@ The common advice for switching agents is to ask the current model to write a `H
 `baton` is written in pure Go using **only the standard library** (`go.mod` has zero external dependencies). Ask your current agent to audit, build, and configure `baton` for all agents on your machine in one prompt:
 
 ```text
-Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
+Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode, cursor). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
 ```
 
 <details>
 <summary><b>Russian Prompt (Промпт на русском языке)</b></summary>
 
 ```text
-Прочитай https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md и установи инструмент baton из исходного кода для всех найденных у меня консольных агентов (claude, codex, agy, pi, opencode). Проверь наличие компилятора Go, собери бинарник в ~/.local/bin/baton, выполни baton install для установки навыка SKILL.md и слэш-команды /baton, а затем проверь работоспособность вызовом baton status.
+Прочитай https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md и установи инструмент baton из исходного кода для всех найденных у меня консольных агентов (claude, codex, agy, pi, opencode, cursor). Проверь наличие компилятора Go, собери бинарник в ~/.local/bin/baton, выполни baton install для установки навыка SKILL.md и слэш-команды /baton, а затем проверь работоспособность вызовом baton status.
 ```
 </details>
 
@@ -136,7 +137,7 @@ Or via the slash command:
 /baton load 1
 ```
 
-**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Without arguments, `baton import` only shows a list and never imports anything by itself. Unlike `baton load`, it lists the 15 most recent sessions of all five agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
+**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Without arguments, `baton import` only shows a list and never imports anything by itself. Unlike `baton load`, it lists the 15 most recent sessions of all six agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
 
 ```text
 baton import 1

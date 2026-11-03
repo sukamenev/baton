@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/binary"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestParseClaudeCompactionAndHandoff(t *testing.T) {
@@ -312,6 +315,9 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmp, "claude"))
 	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "xdg-data"))
+	t.Setenv("CURSOR_HOME", filepath.Join(tmp, "cursor-home"))
+	t.Setenv("CURSOR_AGENT", "")
+	t.Setenv("CURSOR_CONVERSATION_ID", "")
 	// clearSavedSessions removes os.TempDir()/baton-handoff — keep it away from the real /tmp
 	t.Setenv("TMPDIR", filepath.Join(tmp, "tmp"))
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")
@@ -504,5 +510,290 @@ func TestRemoveSavedSession(t *testing.T) {
 	}
 	if list := listSessionsReport("", ""); !strings.Contains(list, "No saved Baton sessions found") {
 		t.Fatalf("expected empty store, got: %s", list)
+	}
+}
+
+func TestCursorSessionParseAndCaller(t *testing.T) {
+	tmp := t.TempDir()
+	id := "11111111-2222-3333-4444-555555555555"
+	jsonl := filepath.Join(tmp, "projects", "demo", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(jsonl), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "chats", "ws", id), 0755); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"schemaVersion":1,"title":"Tool Upgrade Cursor","cwd":"/data/sources/baton"}`
+	if err := os.WriteFile(filepath.Join(tmp, "chats", "ws", id, "meta.json"), []byte(meta), 0644); err != nil {
+		t.Fatal(err)
+	}
+	segDir := filepath.Join(filepath.Dir(jsonl), "compaction")
+	if err := os.MkdirAll(segDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	segment := strings.Join([]string{
+		"# HISTORICAL -- DO NOT EDIT",
+		"",
+		"## Summary (curated by compaction step)",
+		"",
+		"Summary:",
+		"1. The parser was being extended for Cursor.",
+		"",
+		"## Verbatim turns",
+		"",
+		"### Turn 0 (System)",
+		"system prompt",
+		"",
+		"### Turn 1 (Human)",
+		"<user_query>",
+		"Earlier request before compact",
+		"</user_query>",
+		"",
+		"### Turn 2 (Assistant)",
+		"I started reading parsers.go",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(segDir, "segment_000.md"), []byte(segment), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>t</timestamp>\n<user_query>\nFix the parser\n</user_query>"}]}}`,
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"Editing parsers.go"},{"type":"tool_use","name":"Shell","input":{"command":"go test"}},{"type":"tool_use","name":"StrReplace","input":{"path":"parsers.go","old_string":"a","new_string":"b"}}]}}`,
+		`{"type":"turn_ended","status":"success"}`,
+	}
+	if err := os.WriteFile(jsonl, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CURSOR_HOME", tmp)
+	ps, err := parseSessionFile("cursor", jsonl, time.Now())
+	if err != nil {
+		t.Fatalf("parse cursor: %v", err)
+	}
+	if ps.Title != "Tool Upgrade Cursor" || ps.CWD != "/data/sources/baton" {
+		t.Fatalf("meta not applied: title=%q cwd=%q", ps.Title, ps.CWD)
+	}
+	if ps.PreCompactTurns != 3 || !strings.Contains(ps.CompactSummary, "extended for Cursor") {
+		t.Fatalf("compaction: pre=%d summary=%q", ps.PreCompactTurns, ps.CompactSummary)
+	}
+	if len(ps.PostCompact) != 4 {
+		t.Fatalf("expected 4 post-compact turns (user, text, shell, edit), got %d", len(ps.PostCompact))
+	}
+	if !strings.Contains(ps.PostCompact[0].Text, "Fix the parser") {
+		t.Fatalf("post-compact user text: %q", ps.PostCompact[0].Text)
+	}
+	if len(ps.Commands) != 1 || ps.Commands[0] != "go test" {
+		t.Fatalf("commands: %v", ps.Commands)
+	}
+	if len(ps.ModifiedFiles) != 1 || ps.ModifiedFiles[0] != "parsers.go" {
+		t.Fatalf("modified files: %v", ps.ModifiedFiles)
+	}
+	_, _, preview := inspectSessionQuickMeta("cursor", jsonl)
+	if preview != "Fix the parser" {
+		t.Fatalf("preview: %q", preview)
+	}
+
+	t.Setenv("CURSOR_CONVERSATION_ID", id)
+	if !isCallerOwnSession(jsonl) {
+		t.Fatal("expected the live Cursor conversation to be excluded from import")
+	}
+	picked := selectCurrentSessionCandidate("all", []SessionCandidate{{
+		Agent: "cursor", Path: jsonl, Title: ps.Title, CWD: ps.CWD,
+	}})
+	if picked.Path != jsonl {
+		t.Fatalf("current session pick: %s", picked.Path)
+	}
+	if ag, q := resolveAgentAndQuery([]string{"cursor"}, "latest"); ag != "cursor" || q != "latest" {
+		t.Fatalf("resolve cursor: %q %q", ag, q)
+	}
+	wantSkill := filepath.Join(tmp, "skills", "baton", "SKILL.md")
+	foundSkill := false
+	for _, p := range skillTargetPaths(tmp) {
+		if p == wantSkill {
+			foundSkill = true
+		}
+	}
+	if !foundSkill {
+		t.Fatalf("cursor skill path %s missing from %v", wantSkill, skillTargetPaths(tmp))
+	}
+
+	report := formatHandoffSummary(ps, t.TempDir(), nil)
+	if !strings.Contains(report, "source [CURSOR]") || !strings.Contains(report, "Fix the parser") || !strings.Contains(report, "Handoff Status:") {
+		t.Fatalf("cursor handoff missing expected text:\n%s", report)
+	}
+}
+
+// recentSessionFiles returns jsonl transcripts under root, newest first, skipping
+// empty files, files larger than maxBytes, and Claude subagent logs.
+func recentSessionFiles(root string, maxBytes int64) []string {
+	type stamped struct {
+		mod  time.Time
+		path string
+	}
+	var found []stamped
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		if strings.Contains(filepath.ToSlash(path), "/subagents/") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() == 0 || info.Size() > maxBytes {
+			return nil
+		}
+		found = append(found, stamped{mod: info.ModTime(), path: path})
+		return nil
+	})
+	sort.Slice(found, func(i, j int) bool { return found[i].mod.After(found[j].mod) })
+	out := make([]string, len(found))
+	for i, f := range found {
+		out[i] = f.path
+	}
+	return out
+}
+
+// userSnippet is a short slice of the stored user text that the handoff keeps verbatim.
+func userSnippet(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	const max = 48
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+func firstUserText(ps *ParsedSession) string {
+	for _, t := range ps.AllTurns {
+		if t.Role == "user" && strings.TrimSpace(t.Text) != "" {
+			return t.Text
+		}
+	}
+	return ""
+}
+
+func handoffHas(t *testing.T, ps *ParsedSession, want string) {
+	t.Helper()
+	dir, err := writeHandoffDirectory(ps, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "active_context.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := os.ReadFile(filepath.Join(dir, "full_dialogue.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(body) + "\n" + string(full)
+	if !strings.Contains(combined, want) {
+		t.Fatalf("handoff for [%s] %s missing %q", ps.Agent, ps.SourceFile, want)
+	}
+}
+
+// TestRealHandoffDirections reads transcripts already on this machine.
+// Claude and Codex sessions are handed off in the form Cursor's skill reads.
+// This Cursor conversation is handed off in the form Codex and Claude read.
+// The test skips when those files are not on the machine (upstream CI).
+func TestRealHandoffDirections(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const maxBytes = 2 << 20
+
+	claudeFiles := recentSessionFiles(filepath.Join(claudeBaseDir(home), "projects"), maxBytes)
+	if len(claudeFiles) == 0 {
+		t.Skip("no Claude transcript under 2MB on this machine")
+	}
+	var claudePath string
+	for _, path := range claudeFiles {
+		ps, err := parseSessionFile("claude", path, time.Now())
+		if err != nil || firstUserText(ps) == "" {
+			continue
+		}
+		claudePath = path
+		t.Logf("claude -> cursor: %s user=%q turns=%d cwd=%q", path, truncateInline(firstUserText(ps), 80), len(ps.AllTurns), ps.CWD)
+		handoffHas(t, ps, "source [CLAUDE]")
+		handoffHas(t, ps, userSnippet(firstUserText(ps)))
+		break
+	}
+	if claudePath == "" {
+		t.Fatal("Claude transcripts exist but none produced a user turn")
+	}
+
+	codexFiles := recentSessionFiles(filepath.Join(codexBaseDir(home), "sessions"), maxBytes)
+	if len(codexFiles) == 0 {
+		t.Skip("no Codex transcript under 2MB on this machine")
+	}
+	var codexPath string
+	for _, path := range codexFiles {
+		ps, err := parseSessionFile("codex", path, time.Now())
+		if err != nil || firstUserText(ps) == "" {
+			continue
+		}
+		codexPath = path
+		t.Logf("codex -> cursor: %s user=%q turns=%d cwd=%q", path, truncateInline(firstUserText(ps), 80), len(ps.AllTurns), ps.CWD)
+		handoffHas(t, ps, "source [CODEX]")
+		handoffHas(t, ps, userSnippet(firstUserText(ps)))
+		break
+	}
+	if codexPath == "" {
+		t.Fatal("Codex transcripts exist but none produced a user turn")
+	}
+
+	id := "b416039b-a446-4d61-ac8e-4a21a42a07b6"
+	matches, _ := filepath.Glob(filepath.Join(home, ".cursor", "projects", "*", "agent-transcripts", id, id+".jsonl"))
+	if len(matches) == 0 {
+		t.Skip("this Cursor conversation is not on this machine")
+	}
+	if len(matches) != 1 {
+		t.Fatalf("this Cursor transcript: found %d files", len(matches))
+	}
+	// Meta lookup uses CURSOR_HOME. Keep the real ~/.cursor for this conversation.
+	t.Setenv("CURSOR_HOME", filepath.Join(home, ".cursor"))
+	var discovered SessionCandidate
+	for _, c := range discoverSessions("cursor", "") {
+		if strings.Contains(c.Path, id) {
+			discovered = c
+			break
+		}
+	}
+	if discovered.Path == "" || discovered.Title != "Tool Upgrade Cursor" || discovered.CWD != "/data/sources/baton" {
+		t.Fatalf("cursor discovery missed this session: %+v", discovered)
+	}
+	ps, err := parseSessionFile("cursor", matches[0], time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.Title != "Tool Upgrade Cursor" || ps.CWD != "/data/sources/baton" {
+		t.Fatalf("this session meta: title=%q cwd=%q", ps.Title, ps.CWD)
+	}
+	if !strings.Contains(firstUserText(ps), "support cursor") {
+		t.Fatalf("this session user text does not include the original request: %q", truncateInline(firstUserText(ps), 200))
+	}
+	t.Logf("cursor -> codex and cursor -> claude: %s title=%q turns=%d post=%d", matches[0], ps.Title, len(ps.AllTurns), len(ps.PostCompact))
+	for _, dest := range []string{"codex", "claude"} {
+		dir := t.TempDir()
+		report := formatHandoffSummary(ps, dir, nil)
+		body, err := os.ReadFile(filepath.Join(dir, "active_context.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined := report + "\n" + string(body)
+		for _, want := range []string{"source [CURSOR]", "Tool Upgrade Cursor", "/data/sources/baton", "support cursor"} {
+			if !strings.Contains(combined, want) {
+				t.Fatalf("handoff for destination %s missing %q", dest, want)
+			}
+		}
+		t.Logf("wrote %s handoff (%d bytes) for destination %s", filepath.Join(dir, "active_context.md"), len(body), dest)
 	}
 }

@@ -1,7 +1,7 @@
 ---
 name: baton
 description: >-
-  Lossless session handoff across CLI coding agents (claude, codex, agy, pi, opencode)
+  Lossless session handoff across CLI coding agents (claude, codex, agy, pi, opencode, cursor)
   and client-side encrypted session + workspace transfer between machines. Activate
   this skill whenever the user asks in plain words, in any language, to continue/load/resume a session
   (by name, from another agent, or the latest session), name a session, list recent
@@ -38,6 +38,8 @@ The user may write in any language. The phrases in the table below are English e
 `baton save` works only with the current session. Never pass it a number or another session; use `baton import <#|id> as <name>` instead.
 
 Note for Codex CLI: if a remote `baton load <URL>` or `baton push` fails due to sandbox network restrictions and permission escalation is rejected by policy, tell the user to run `!baton load "<URL>"` (or `!baton push`) directly in the Codex prompt with a leading exclamation mark `!`, and then type `baton load`.
+
+Cursor (IDE agent and `agent` CLI) has no `/baton` slash command. The phrases in the table activate this skill. Run the same `baton` commands.
 
 ## Rules After Running `baton list`, `baton load`, or `baton import`
 

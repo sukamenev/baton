@@ -55,6 +55,12 @@ type SessionCandidate struct {
 
 var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
+// cursorUserQueryPattern pulls the text the user typed out of a Cursor user turn.
+var cursorUserQueryPattern = regexp.MustCompile(`(?s)<user_query>\s*(.*?)\s*</user_query>`)
+
+// cursorTurnHeading marks one verbatim turn inside a Cursor compaction segment.
+var cursorTurnHeading = regexp.MustCompile(`(?m)^### Turn (\d+) \((System|Human|Assistant|Function|Tool)\)[ \t]*\r?\n`)
+
 // agentSessionID extracts the agent's own session ID from a raw session path:
 // the OpenCode id after "::" (without its "ses_" prefix), otherwise the last UUID
 // in the path (Claude/Pi/Codex file name, agy brain directory), otherwise the file name.
@@ -139,6 +145,15 @@ func opencodeConfigDir(home string) string {
 		return filepath.Join(env, "opencode")
 	}
 	return filepath.Join(home, ".config", "opencode")
+}
+
+// cursorBaseDir is Cursor's config root (IDE and `agent` CLI share it).
+// CURSOR_HOME overrides it for tests; Cursor itself does not read that variable.
+func cursorBaseDir(home string) string {
+	if env := strings.TrimSpace(os.Getenv("CURSOR_HOME")); env != "" {
+		return env
+	}
+	return filepath.Join(home, ".cursor")
 }
 
 func agyBaseDirs(home string) []string {
@@ -452,6 +467,9 @@ func saveAliases(aliases map[string]string) error {
 // detectCallerAgent identifies which CLI coding agent is currently executing baton
 // by inspecting agent-specific environment variables and walking the parent process tree.
 func detectCallerAgent() string {
+	if os.Getenv("CURSOR_AGENT") != "" || os.Getenv("CURSOR_CONVERSATION_ID") != "" {
+		return "cursor"
+	}
 	if os.Getenv("CLAUDECODE") != "" || os.Getenv("CLAUDE_CODE_ENTRYPOINT") != "" {
 		return "claude"
 	}
@@ -473,6 +491,8 @@ func detectCallerAgent() string {
 		if envBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid)); err == nil && len(envBytes) > 0 {
 			envStr := string(envBytes)
 			switch {
+			case strings.Contains(envStr, "CURSOR_AGENT=") || strings.Contains(envStr, "CURSOR_CONVERSATION_ID="):
+				return "cursor"
 			case strings.Contains(envStr, "CLAUDECODE=") || strings.Contains(envStr, "CLAUDE_CODE_ENTRYPOINT="):
 				return "claude"
 			case strings.Contains(envStr, "CODEX_SANDBOX=") || strings.Contains(envStr, "CODEX_THREAD_ID="):
@@ -491,6 +511,8 @@ func detectCallerAgent() string {
 		}
 		lower := strings.ToLower(string(bytes.ReplaceAll(cmdline, []byte{0}, []byte{' '})))
 		switch {
+		case strings.Contains(lower, "cursor-agent") || strings.Contains(lower, "cursor agent"):
+			return "cursor"
 		case strings.Contains(lower, "opencode"):
 			return "opencode"
 		case strings.Contains(lower, "claude"):
@@ -571,6 +593,13 @@ func selectCurrentSessionCandidate(agent string, candidates []SessionCandidate) 
 	if codexThread := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID")); codexThread != "" {
 		for _, c := range candidates {
 			if strings.Contains(filepath.Base(c.Path), codexThread) {
+				return c
+			}
+		}
+	}
+	if cursorID := strings.TrimSpace(os.Getenv("CURSOR_CONVERSATION_ID")); cursorID != "" {
+		for _, c := range candidates {
+			if c.Agent == "cursor" && strings.Contains(strings.ToLower(c.Path), strings.ToLower(cursorID)) {
 				return c
 			}
 		}
@@ -735,7 +764,7 @@ const importListLimit = 15
 // not something to import).
 func isCallerOwnSession(path string) bool {
 	base := filepath.Base(path)
-	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"} {
+	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "CURSOR_CONVERSATION_ID"} {
 		if id := strings.TrimSpace(os.Getenv(env)); id != "" && strings.Contains(base, id) {
 			return true
 		}
@@ -1168,6 +1197,30 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		}
 	}
 
+	if agent == "all" || agent == "cursor" {
+		metas := loadCursorMetaIndex(home)
+		projects := filepath.Join(cursorBaseDir(home), "projects")
+		projEntries, _ := os.ReadDir(projects)
+		for _, proj := range projEntries {
+			if !proj.IsDir() {
+				continue
+			}
+			tRoot := filepath.Join(projects, proj.Name(), "agent-transcripts")
+			sessEntries, err := os.ReadDir(tRoot)
+			if err != nil {
+				continue
+			}
+			for _, sess := range sessEntries {
+				if !sess.IsDir() {
+					continue
+				}
+				jsonl := filepath.Join(tRoot, sess.Name(), sess.Name()+".jsonl")
+				meta := metas[strings.ToLower(sess.Name())]
+				addFile("cursor", jsonl, meta.Title, meta.CWD)
+			}
+		}
+	}
+
 	if agent == "all" || agent == "opencode" {
 		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), aliases, query)...)
 	}
@@ -1178,7 +1231,7 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		for _, m := range importFiles {
 			ag := "imported"
 			base := filepath.Base(m)
-			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode"} {
+			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor"} {
 				if strings.HasPrefix(base, known+"-") {
 					ag = known
 					break
@@ -1455,7 +1508,15 @@ func userPromptFromRow(row map[string]interface{}) string {
 	if msg == nil {
 		msg, _ = row["payload"].(map[string]interface{})
 	}
-	if msg == nil || msg["role"] != "user" {
+	if msg == nil {
+		return ""
+	}
+	role, _ := msg["role"].(string)
+	if role == "" {
+		// Cursor stores role on the row, not inside message.
+		role, _ = row["role"].(string)
+	}
+	if role != "user" {
 		return ""
 	}
 	switch content := msg["content"].(type) {
@@ -1477,6 +1538,10 @@ func userPromptFromRow(row map[string]interface{}) string {
 
 func cleanUserPrompt(s string) string {
 	s = strings.TrimSpace(s)
+	// Cursor wraps the typed prompt in <user_query> after a <timestamp> block.
+	if m := cursorUserQueryPattern.FindStringSubmatch(s); len(m) == 2 {
+		s = strings.TrimSpace(m[1])
+	}
 	// Agent-injected context: <environment_context>, <command-name>, <system-reminder>,
 	// <local-command-caveat>, AGENTS.md instructions, etc.
 	if s == "" || strings.HasPrefix(s, "<") || strings.HasPrefix(s, "# AGENTS.md instructions") ||
@@ -1551,6 +1616,9 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 	case "claude":
 		err := parseClaudeJSONL(realPath, ps)
 		return ps, err
+	case "cursor":
+		err := parseCursorSession(realPath, ps)
+		return ps, err
 	case "agy":
 		err := parseAgyTranscriptJSONL(realPath, ps)
 		return ps, err
@@ -1561,6 +1629,229 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 		err := parseCodexOrGenericJSONL(realPath, ps)
 		return ps, err
 	}
+}
+
+type cursorMeta struct {
+	Title string
+	CWD   string
+}
+
+// loadCursorMetaIndex maps a conversation UUID to the title and folder stored in
+// ~/.cursor/chats/<workspace>/<uuid>/meta.json. Those fields are not in the jsonl.
+func loadCursorMetaIndex(home string) map[string]cursorMeta {
+	out := make(map[string]cursorMeta)
+	root := filepath.Join(cursorBaseDir(home), "chats")
+	workspaces, err := os.ReadDir(root)
+	if err != nil {
+		return out
+	}
+	for _, workspace := range workspaces {
+		if !workspace.IsDir() {
+			continue
+		}
+		sessions, err := os.ReadDir(filepath.Join(root, workspace.Name()))
+		if err != nil {
+			continue
+		}
+		for _, sess := range sessions {
+			if !sess.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(root, workspace.Name(), sess.Name(), "meta.json"))
+			if err != nil {
+				continue
+			}
+			var raw struct {
+				Title string `json:"title"`
+				CWD   string `json:"cwd"`
+			}
+			if json.Unmarshal(data, &raw) != nil {
+				continue
+			}
+			out[strings.ToLower(sess.Name())] = cursorMeta{
+				Title: strings.TrimSpace(raw.Title),
+				CWD:   strings.TrimSpace(raw.CWD),
+			}
+		}
+	}
+	return out
+}
+
+func cursorMetaFor(path string) cursorMeta {
+	home, _ := os.UserHomeDir()
+	return loadCursorMetaIndex(home)[strings.ToLower(agentSessionID(path))]
+}
+
+// cursorCuratedSummary returns the compaction step's summary, not the verbatim record.
+func cursorCuratedSummary(text string) string {
+	const start = "## Summary (curated by compaction step)"
+	i := strings.Index(text, start)
+	if i < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(text[i+len(start):])
+	if j := strings.Index(rest, "\n## Verbatim turns"); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
+func cursorCompactionRole(label string) string {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "human", "user":
+		return "user"
+	case "assistant":
+		return "assistant"
+	case "function", "tool":
+		return "tool_result"
+	case "system":
+		return "system"
+	default:
+		return strings.ToLower(strings.TrimSpace(label))
+	}
+}
+
+// parseCursorCompaction loads compaction/segment_*.md beside a Cursor transcript.
+// The curated summary becomes the compact checkpoint. Verbatim turns stay in the
+// full history. The jsonl file is only the post-compaction tail.
+func parseCursorCompaction(jsonlPath string, ps *ParsedSession, addTurn func(SessionTurn)) {
+	dir := filepath.Join(filepath.Dir(jsonlPath), "compaction")
+	segments, err := filepath.Glob(filepath.Join(dir, "segment_*.md"))
+	if err != nil || len(segments) == 0 {
+		return
+	}
+	sort.Strings(segments)
+	for _, seg := range segments {
+		data, err := os.ReadFile(seg)
+		if err != nil || len(bytes.TrimSpace(data)) == 0 {
+			continue
+		}
+		text := string(data)
+		if summary := cursorCuratedSummary(text); summary != "" {
+			ps.CompactSummary = summary
+		}
+		verbatim := text
+		if i := strings.Index(text, "## Verbatim turns"); i >= 0 {
+			verbatim = text[i:]
+		}
+		idxs := cursorTurnHeading.FindAllStringSubmatchIndex(verbatim, -1)
+		if len(idxs) == 0 {
+			body := ps.CompactSummary
+			if body == "" {
+				body = strings.TrimSpace(text)
+			}
+			addTurn(SessionTurn{Role: "compaction", Text: body})
+			continue
+		}
+		for i, loc := range idxs {
+			role := cursorCompactionRole(verbatim[loc[4]:loc[5]])
+			start := loc[1]
+			end := len(verbatim)
+			if i+1 < len(idxs) {
+				end = idxs[i+1][0]
+			}
+			body := strings.TrimSpace(verbatim[start:end])
+			if body == "" {
+				continue
+			}
+			addTurn(SessionTurn{Role: role, Text: body})
+		}
+	}
+}
+
+// parseCursorSession reads a Cursor agent transcript.
+// Layout: ~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl
+// plus optional compaction/segment_*.md and a title in ~/.cursor/chats/.../meta.json.
+func parseCursorSession(path string, ps *ParsedSession) error {
+	meta := cursorMetaFor(path)
+	if ps.Title == "" {
+		ps.Title = meta.Title
+	}
+	if ps.CWD == "" {
+		ps.CWD = meta.CWD
+	}
+
+	modSet := make(map[string]bool)
+	turnID := 0
+	addTurn := func(t SessionTurn) {
+		turnID++
+		t.TurnID = turnID
+		ps.AllTurns = append(ps.AllTurns, t)
+		ps.PostCompact = append(ps.PostCompact, t)
+	}
+
+	parseCursorCompaction(path, ps, addTurn)
+	if turnID > 0 {
+		ps.PreCompactTurns = turnID
+		ps.PostCompact = nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	for scanner.Scan() {
+		var row map[string]interface{}
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			continue
+		}
+		if typ, _ := row["type"].(string); typ == "turn_ended" {
+			continue
+		}
+		role, _ := row["role"].(string)
+		msg, _ := row["message"].(map[string]interface{})
+		if msg == nil {
+			continue
+		}
+		contents, ok := msg["content"].([]interface{})
+		if !ok {
+			if str, ok := msg["content"].(string); ok && strings.TrimSpace(str) != "" {
+				addTurn(SessionTurn{Role: role, Text: str})
+			}
+			continue
+		}
+		for _, item := range contents {
+			block, _ := item.(map[string]interface{})
+			bType, _ := block["type"].(string)
+			switch bType {
+			case "text":
+				txt, _ := block["text"].(string)
+				if strings.TrimSpace(txt) == "" {
+					continue
+				}
+				turnRole := role
+				if turnRole == "" {
+					turnRole = "assistant"
+				}
+				addTurn(SessionTurn{Role: turnRole, Text: txt})
+			case "tool_use":
+				name, _ := block["name"].(string)
+				input, _ := block["input"].(map[string]interface{})
+				recordToolSideEffects(name, input, modSet, &ps.Commands)
+				argBytes, _ := json.Marshal(input)
+				addTurn(SessionTurn{
+					Role:      "tool_use",
+					ToolName:  name,
+					Text:      fmt.Sprintf("Call `%s`: %s", name, truncateInline(string(argBytes), 300)),
+					RawOutput: fmt.Sprintf("Call `%s`: %s", name, string(argBytes)),
+				})
+			case "tool_result":
+				raw := extractContentText(block["content"])
+				addTurn(SessionTurn{
+					Role:      "tool_result",
+					Text:      summarizeToolOutput(raw),
+					RawOutput: raw,
+				})
+			}
+		}
+	}
+
+	ps.ModifiedFiles = sortedKeys(modSet)
+	return scanner.Err()
 }
 
 func parseClaudeJSONL(path string, ps *ParsedSession) error {
@@ -2414,7 +2705,7 @@ func recordToolSideEffects(name string, input map[string]interface{}, modSet map
 	}
 	for _, k := range []string{"file_path", "filePath", "path", "Path", "target_file", "TargetFile"} {
 		if p, ok := input[k].(string); ok && strings.TrimSpace(p) != "" {
-			if strings.Contains(lower, "edit") || strings.Contains(lower, "write") || strings.Contains(lower, "replace") || strings.Contains(lower, "create") || strings.Contains(lower, "patch") {
+			if strings.Contains(lower, "edit") || strings.Contains(lower, "write") || strings.Contains(lower, "replace") || strings.Contains(lower, "create") || strings.Contains(lower, "patch") || strings.Contains(lower, "delete") {
 				modSet[p] = true
 			}
 		}
