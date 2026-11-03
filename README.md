@@ -48,7 +48,7 @@ The common advice for switching agents is to ask the current model to write a `H
 | **Codex CLI** (`codex`) | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` & `session_index.jsonl` (`$CODEX_HOME`) | JSONL (Responses API & shell events) | `type: "compaction"` or `<context_summary>` |
 | **Antigravity CLI** (`agy`) | `~/.gemini/antigravity-cli/brain/<uuid>/.../transcript.jsonl` & `conversations/*.pb` | JSONL & schema-less Protobuf wire format | `CHECKPOINT` / embedded summary block |
 | **Pi** (`pi`) | `~/.pi/agent/sessions/--<cwd-slug>--/<ts>_<id>.jsonl` (`$PI_CODING_AGENT_DIR`) | v3 Tree JSONL (`id`, `parentId`, `session_info`, `bashExecution`) | `type: "compaction"` (`firstKeptEntryId`, `details.modifiedFiles`) |
-| **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` on every OS (`$XDG_DATA_HOME`) | SQLite (`session`, `message`, `part` tables), read via the `sqlite3` command | `compaction` part + assistant message with `summary: true` (manual `/compact` and auto-compaction) |
+| **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` on every OS (`$XDG_DATA_HOME`) | SQLite (`session_v2` + `session_message` tables in OpenCode 2.x; `session`/`message`/`part` in 1.x), read via the `sqlite3` command | `compaction` message with `summary` (manual `/compact` and auto-compaction) |
 
 > **Using DeepSeek, GLM, Grok, or Ollama?** Most developers run those models inside **Pi** or **OpenCode**. Because `baton` natively supports both `pi` and `opencode`, you can hand off a session from a $20 Claude/Codex subscription directly to DeepSeek V3/R1, GLM, or Grok.
 
