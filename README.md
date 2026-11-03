@@ -51,6 +51,13 @@ The common advice for switching agents is to ask the current model to write a `H
 | **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` on every OS (`$XDG_DATA_HOME`) | SQLite (`session_v2` + `session_message` tables in OpenCode 2.x; `session`/`message`/`part` in 1.x), read via the `sqlite3` command | `compaction` message with `summary` (manual `/compact` and auto-compaction) |
 | **Cursor** (`cursor`) | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` (IDE and `agent` CLI). Title and folder: `~/.cursor/chats/<workspace>/<uuid>/meta.json` | JSONL (`role` + `message.content` `text` / `tool_use`) | `compaction/segment_*.md` beside the jsonl (curated summary + verbatim turns). The jsonl is the post-compaction tail |
 
+Cursor support reads the JSONL layout shown above and optional Markdown compaction
+segments; older or other storage layouts are not parsed. Commands and modified-file
+lists come from JSONL tool calls; historical Markdown turns remain available in the
+full transcript. `baton install` installs the skill in `~/.cursor/skills/baton/`.
+Cursor also supports [manual skill invocation from the `/` menu](https://cursor.com/docs/skills).
+The separate `commands/baton.md` slash-command file is installed for Claude Code.
+
 > **Using DeepSeek, GLM, Grok, or Ollama?** Most developers run those models inside **Pi** or **OpenCode**. Because `baton` natively supports both `pi` and `opencode`, you can hand off a session from a $20 Claude/Codex subscription directly to DeepSeek V3/R1, GLM, or Grok.
 
 ---
@@ -97,12 +104,17 @@ The new version then refreshes `SKILL.md` and `/baton` in all installed agents.
 
 ## Usage
 
+Explicit `baton` commands always invoke Baton. For natural-language requests,
+mention Baton or ask to save or transfer a session for use in another agent or
+on another computer. Generic requests to find, list, name, save, or resume
+sessions do not activate the skill.
+
 ### 1. Recommended Workflow: `baton save` & `baton load`
 
 Before switching agents, save your active session into baton's store under a memorable name (`baton save my_session`; without a name, the current folder name is used):
 
 ```text
-Save this session as my_session
+Save this session as my_session using baton
 ```
 
 `baton save` outputs a ready-to-paste prompt that works even in an agent where `baton` has never been installed yet:
@@ -111,19 +123,19 @@ Save this session as my_session
 Load session my_session using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
 ```
 
-When `claude` hits its 5-hour quota limit, open `codex`, `agy`, `pi`, or `opencode` and ask in plain words (you don't even need to specify which agent had the session):
+When `claude` hits its 5-hour quota limit, open `codex`, `agy`, `pi`, `opencode`, or Cursor and ask in plain words (you don't even need to specify which agent had the session):
 
 ```text
-Continue session my_session
+Continue session my_session using baton
 ```
 
 Or to grab the most recently saved session:
 
 ```text
-Continue the latest session
+Continue the latest session using baton
 ```
 
-Or via the slash command:
+Or via the Claude Code slash command:
 
 ```text
 /baton load my_session
@@ -131,13 +143,13 @@ Or via the slash command:
 
 > **Load into a clean context.** If the agent already has a conversation going, start a new one first (`/clear` in Claude Code and agy, `/new` in Codex), then ask to load the session. Otherwise the loaded session lands on top of the old conversation: two tasks get mixed and the context window fills up faster. A freshly launched agent needs nothing extra. The same applies to `baton import`.
 
-**Forgot the session name?** Ask the agent *"What saved sessions are there?"* (or run `baton list`). It shows a numbered list of sessions saved into baton, newest first, with save time, agent, name, session ID, folder, and the last prompt, so you can simply say *"Load session #1"* (or run `/baton load 1`):
+**Forgot the session name?** Ask the agent *"What sessions are saved in baton?"* (or run `baton list`). It shows a numbered list of sessions saved into baton, newest first, with save time, agent, name, session ID, folder, and the last prompt, so you can simply say *"Load session #1"* (or run `/baton load 1`):
 
 ```text
 /baton load 1
 ```
 
-**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Take one of the existing sessions"* (or run `baton import`). Without arguments, `baton import` only shows a list and never imports anything by itself. Unlike `baton load`, it lists the 15 most recent sessions of all six agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
+**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Use baton to list sessions available for import"* (or run `baton import`). Without arguments, `baton import` only shows a list and never imports anything by itself. Unlike `baton load`, it lists the 15 most recent sessions of all supported agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
 
 ```text
 baton import 1

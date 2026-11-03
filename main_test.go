@@ -566,6 +566,11 @@ func TestCursorSessionParseAndCaller(t *testing.T) {
 	}
 
 	t.Setenv("CURSOR_HOME", tmp)
+	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
+	candidates := discoverSessions("cursor", "Tool Upgrade Cursor")
+	if len(candidates) != 1 || candidates[0].Path != jsonl || candidates[0].CWD != "/data/sources/baton" {
+		t.Fatalf("Cursor fixture discovery: %+v", candidates)
+	}
 	ps, err := parseSessionFile("cursor", jsonl, time.Now())
 	if err != nil {
 		t.Fatalf("parse cursor: %v", err)
@@ -704,6 +709,12 @@ func handoffHas(t *testing.T, ps *ParsedSession, want string) {
 // This Cursor conversation is handed off in the form Codex and Claude read.
 // The test skips when those files are not on the machine (upstream CI).
 func TestRealHandoffDirections(t *testing.T) {
+	if os.Getenv("BATON_TEST_REAL_SESSIONS") != "1" {
+		t.Skip("set BATON_TEST_REAL_SESSIONS=1 to inspect local transcripts")
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("TMP", t.TempDir())
+	t.Setenv("TEMP", t.TempDir())
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)

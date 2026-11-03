@@ -1714,34 +1714,30 @@ func cursorCompactionRole(label string) string {
 // parseCursorCompaction loads compaction/segment_*.md beside a Cursor transcript.
 // The curated summary becomes the compact checkpoint. Verbatim turns stay in the
 // full history. The jsonl file is only the post-compaction tail.
-func parseCursorCompaction(jsonlPath string, ps *ParsedSession, addTurn func(SessionTurn)) {
+func parseCursorCompaction(jsonlPath string, ps *ParsedSession, addTurn func(SessionTurn)) error {
 	dir := filepath.Join(filepath.Dir(jsonlPath), "compaction")
 	segments, err := filepath.Glob(filepath.Join(dir, "segment_*.md"))
-	if err != nil || len(segments) == 0 {
-		return
+	if err != nil {
+		return err
 	}
 	sort.Strings(segments)
 	for _, seg := range segments {
 		data, err := os.ReadFile(seg)
-		if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		if err != nil {
+			return fmt.Errorf("read Cursor compaction segment %s: %w", seg, err)
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
 			continue
 		}
 		text := string(data)
-		if summary := cursorCuratedSummary(text); summary != "" {
-			ps.CompactSummary = summary
-		}
+		summary := cursorCuratedSummary(text)
 		verbatim := text
 		if i := strings.Index(text, "## Verbatim turns"); i >= 0 {
 			verbatim = text[i:]
 		}
 		idxs := cursorTurnHeading.FindAllStringSubmatchIndex(verbatim, -1)
 		if len(idxs) == 0 {
-			body := ps.CompactSummary
-			if body == "" {
-				body = strings.TrimSpace(text)
-			}
-			addTurn(SessionTurn{Role: "compaction", Text: body})
-			continue
+			addTurn(SessionTurn{Role: "compaction", Text: strings.TrimSpace(text)})
 		}
 		for i, loc := range idxs {
 			role := cursorCompactionRole(verbatim[loc[4]:loc[5]])
@@ -1756,7 +1752,13 @@ func parseCursorCompaction(jsonlPath string, ps *ParsedSession, addTurn func(Ses
 			}
 			addTurn(SessionTurn{Role: role, Text: body})
 		}
+		if summary != "" {
+			ps.CompactSummary = summary
+			ps.PreCompactTurns = len(ps.AllTurns)
+			ps.PostCompact = nil
+		}
 	}
+	return nil
 }
 
 // parseCursorSession reads a Cursor agent transcript.
@@ -1780,10 +1782,8 @@ func parseCursorSession(path string, ps *ParsedSession) error {
 		ps.PostCompact = append(ps.PostCompact, t)
 	}
 
-	parseCursorCompaction(path, ps, addTurn)
-	if turnID > 0 {
-		ps.PreCompactTurns = turnID
-		ps.PostCompact = nil
+	if err := parseCursorCompaction(path, ps, addTurn); err != nil {
+		return err
 	}
 
 	f, err := os.Open(path)
