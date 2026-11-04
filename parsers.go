@@ -51,6 +51,44 @@ type SessionCandidate struct {
 	ModTime time.Time
 	Preview string
 	ID      string // agent's own session ID; derived from Path when empty
+	Size    int    // active context size in bytes (0: unknown, not shown)
+}
+
+// activeContextSize is the size of what `baton load` hands to the next agent:
+// the latest compaction summary plus every turn after it. It is measured on
+// baton's own normalized text, so sizes are comparable across agents and stay
+// meaningful after the session moves between agents or machines.
+func activeContextSize(summary string, turns []SessionTurn) int {
+	n := len(summary)
+	for _, t := range turns {
+		if t.RawOutput != "" {
+			n += len(t.RawOutput)
+		} else {
+			n += len(t.Text)
+		}
+	}
+	return n
+}
+
+// formatSize renders a byte count with two or three significant digits:
+// 63 KB, 1.4 MB, 93 MB.
+func formatSize(n int) string {
+	const kb, mb = 1024, 1024 * 1024
+	switch {
+	case n < mb:
+		k := (n + kb/2) / kb
+		if k < 1 {
+			k = 1
+		}
+		if k < 1024 {
+			return fmt.Sprintf("%d KB", k)
+		}
+		return "1.0 MB"
+	case n < 10*mb:
+		return fmt.Sprintf("%.1f MB", float64(n)/mb)
+	default:
+		return fmt.Sprintf("%d MB", (n+mb/2)/mb)
+	}
 }
 
 var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
@@ -388,6 +426,7 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 				SessionID   string        `json:"session_id"`
 				Title       string        `json:"title"`
 				CWD         string        `json:"cwd"`
+				Summary     string        `json:"compact_summary"`
 				PostCompact []SessionTurn `json:"post_compact"`
 			}
 			if json.Unmarshal(data, &meta) != nil {
@@ -429,6 +468,7 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 				ModTime: info.ModTime(),
 				Preview: preview,
 				ID:      agentSessionID(strings.TrimPrefix(meta.SessionID, ag+"-")),
+				Size:    activeContextSize(meta.Summary, meta.PostCompact),
 			})
 		}
 	}
@@ -742,8 +782,12 @@ func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
 		if title == "" {
 			title = "(unnamed)"
 		}
-		sb.WriteString(fmt.Sprintf("**#%d** %s [%s] **%s** · id %s  \n",
-			i+1, c.ModTime.Format("2006-01-02 15:04"), c.Agent, title, shortSessionID(c.SessionID())))
+		size := ""
+		if c.Size > 0 {
+			size = " · " + formatSize(c.Size)
+		}
+		sb.WriteString(fmt.Sprintf("**#%d** %s [%s] **%s**%s · id %s  \n",
+			i+1, c.ModTime.Format("2006-01-02 15:04"), c.Agent, title, size, shortSessionID(c.SessionID())))
 		if c.CWD != "" {
 			sb.WriteString(fmt.Sprintf("%s`%s`  \n", listIndent, displayPath(c.CWD)))
 		}

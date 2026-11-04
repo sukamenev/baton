@@ -407,6 +407,37 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	}
 }
 
+func TestFormatSizeAndListRow(t *testing.T) {
+	for n, want := range map[int]string{
+		100:              "1 KB",
+		63 * 1024:        "63 KB",
+		1024*1024 - 1:    "1.0 MB",
+		1468006:          "1.4 MB",
+		93 * 1024 * 1024: "93 MB",
+	} {
+		if got := formatSize(n); got != want {
+			t.Errorf("formatSize(%d) = %q, want %q", n, got, want)
+		}
+	}
+	turns := []SessionTurn{{Text: "abc"}, {Text: "short", RawOutput: "longer raw output"}}
+	if got := activeContextSize("summary", turns); got != len("summary")+3+len("longer raw output") {
+		t.Errorf("activeContextSize = %d", got)
+	}
+	var sb strings.Builder
+	at := time.Date(2026, 11, 4, 2, 2, 0, 0, time.UTC)
+	writeCandidateRows(&sb, []SessionCandidate{
+		{Agent: "codex", Title: "baton-2", ModTime: at, ID: "01a1a331", Size: 384 * 1024},
+		{Agent: "claude", Title: "raw", ModTime: at, ID: "726d401d"},
+	})
+	out := sb.String()
+	if !strings.Contains(out, "**#1** 2026-11-04 02:02 [codex] **baton-2** · 384 KB · id 01a1a331  \n") {
+		t.Errorf("row with size:\n%s", out)
+	}
+	if !strings.Contains(out, "**#2** 2026-11-04 02:02 [claude] **raw** · id 726d401d  \n") {
+		t.Errorf("row without size:\n%s", out)
+	}
+}
+
 func TestDisplayPath(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 	for in, want := range map[string]string{

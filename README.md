@@ -143,7 +143,7 @@ Or via the Claude Code slash command:
 
 > **Load into a clean context.** If the agent already has a conversation going, start a new one first (`/clear` in Claude Code and agy, `/new` in Codex), then ask to load the session. Otherwise the loaded session lands on top of the old conversation: two tasks get mixed and the context window fills up faster. A freshly launched agent needs nothing extra. The same applies to `baton import`.
 
-**Forgot the session name?** Ask the agent *"What sessions are saved in baton?"* (or run `baton list`). It shows a numbered list of sessions saved into baton, newest first, with save time, agent, name, session ID, folder, and the last prompt, so you can simply say *"Load session #1"* (or run `/baton load 1`):
+**Forgot the session name?** Ask the agent *"What sessions are saved in baton?"* (or run `baton list`). It shows a numbered list of sessions saved into baton, newest first, with save time, agent, name, context size, session ID, folder, and the last prompt, so you can simply say *"Load session #1"* (or run `/baton load 1`):
 
 ```text
 /baton load 1
@@ -160,7 +160,7 @@ baton import 7 as my_session
 
 The chosen session is saved into baton and loaded right away; afterwards it appears in `baton list`. If you renamed the session in the agent itself, that name is shown in the list and used when saving.
 
-Each list row looks like **#1** 2026-10-31 00:37 [claude] **my_session** · id 726d401d, with the folder and the last prompt below it. The ID is the agent's own session ID (first 8 characters) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
+Each list row looks like **#1** 2026-10-31 00:37 [claude] **my_session** · 384 KB · id 726d401d, with the folder and the last prompt below it. In `baton list` the size is the active context that `baton load` hands to the next agent (the latest `/compact` summary plus everything after it), measured in baton's own format, so it is comparable across agents and survives transfers between agents and machines. `baton import` does not show sizes, because measuring them means parsing every raw log. The ID is the agent's own session ID (first 8 characters) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
 
 `baton save` always saves the current session; to save any other session under a name, use `baton import <#|id> as <name>`.
 
