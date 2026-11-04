@@ -21,13 +21,13 @@ The common advice for switching agents is to ask the current model to write a `H
 2. **Lossy LLM summarization.** Input context windows reach 200k–1M tokens, whereas max output tokens are capped at 8k–32k. That output ceiling forces aggressive lossy compression: exact compiler flags, line numbers, rejected hypotheses, and subtle edits are dropped, degrading the quality of work in the next agent.
 3. **5x output token cost.** Output tokens typically cost 5 times more than input tokens and burn through remaining subscription quota 5 times faster.
 
-`baton` reads the raw session files stored on disk by the previous agent, locates the latest `/compact` checkpoint, extracts the complete list of modified files and shell commands since turn 1, unpacks the full lossless transcript into the OS temporary directory (`/tmp/baton-handoff/<session_id>/` on Linux/macOS or `%TEMP%\baton-handoff\<session_id>\` on Windows, keeping your project directory and `git status` clean), and prints a structured handoff summary for the next agent.
+`baton` reads the raw session files stored on disk by the previous agent, locates the latest `/compact` checkpoint, extracts the complete list of modified files and shell commands since turn 1, unpacks the full lossless transcript into the OS temporary directory (`/tmp/baton-<uid>/handoff/<session_id>/` on Linux/macOS or `%TEMP%\baton\handoff\<session_id>\` on Windows, a private per-user folder, keeping your project directory and `git status` clean), and prints a structured handoff summary for the next agent.
 
 ```text
 ┌──────────────────────┐       Raw Disk Logs (.jsonl / .pb / .db)      ┌──────────────────────┐
 │  Claude / Codex /    │ ────────────────────────────────────────────► │        baton         │
 │ AGY / Pi / OpenCode  │   1. Locate latest /compact checkpoint        │ (One-Shot Go CLI +   │
-│  / Cursor            │   2. Unpack full log -> /tmp/baton-handoff/   │      SKILL.md)       │
+│  / Cursor            │   2. Unpack full log -> /tmp/baton-<uid>/     │      SKILL.md)       │
 │  (Quota Exhausted)   │   3. Print compact summary + file manifest    └──────────┬───────────┘
 └──────────────────────┘                                                          │
                                                                                   ▼
@@ -160,7 +160,7 @@ baton import 7 as my_session
 
 The chosen session is saved into baton and loaded right away; afterwards it appears in `baton list`. If you renamed the session in the agent itself, that name is shown in the list and used when saving.
 
-Each list row looks like **#1** 2026-10-31 00:37 [claude] **my_session** · 384 KB · id 726d401d, with the folder and the last prompt below it. In `baton list` the size is the active context that `baton load` hands to the next agent (the latest `/compact` summary plus everything after it), measured in baton's own format, so it is comparable across agents and survives transfers between agents and machines. `baton import` does not show sizes, because measuring them means parsing every raw log. The ID is the agent's own session ID (first 8 characters) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
+Each list row looks like **#1** 2026-10-31 00:37 [claude] **my_session** · 384 KB · id 726d401d, with the folder and the last prompt below it. In `baton list` the size is the active context that `baton load` hands to the next agent (the latest `/compact` summary plus everything after it), measured in baton's own format, so it is comparable across agents and survives transfers between agents and machines. `baton import` shows the same size for raw sessions; measuring it means parsing each log, so the result is cached in `/tmp/baton-<uid>/cache/` and an unchanged session is not parsed again. The ID is the agent's own session ID (first 8 characters) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
 
 `baton save` always saves the current session; to save any other session under a name, use `baton import <#|id> as <name>`.
 
@@ -200,7 +200,7 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 /baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
 ```
 
-`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-handoff/<session_id>/global_rules/`, saves the downloaded session into Baton's saved sessions store (`~/.config/baton/saved/` so subsequent `baton load` or `baton list` calls work offline without re-downloading), and loads the full active session context.
+`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-<uid>/handoff/<session_id>/global_rules/`, saves the downloaded session into Baton's saved sessions store (`~/.config/baton/saved/` so subsequent `baton load` or `baton list` calls work offline without re-downloading), and loads the full active session context.
 
 > **Codex CLI Sandbox Note:** If Codex CLI's workspace sandbox blocks network access during a remote `baton load <URL>` and policy rejects permission escalation, run `!baton load "<URL>"` directly at the Codex prompt (with a leading exclamation mark `!`) to download and save the bundle into `~/.config/baton/saved/`, and then type `baton load`.
 
@@ -216,7 +216,7 @@ On your laptop, open the project folder in any agent and run the exact same `loa
 | `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...), newest first. |
 | `baton import [#\|name\|id] [as name] [--no-load]` | Lists recent sessions of all agents (`#1`, `#2`, ...); with a number, name, or session ID, saves that session into baton (under the `as` name, if given) and loads it (`--no-load`: only saves). For sessions that were never saved. |
 | `baton rm <name\|#>` | Deletes one saved session (exact name or number from `baton list`). The agent's own session log is not touched. |
-| `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff caches (`/tmp/baton-handoff/`). |
+| `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff files (`/tmp/baton-<uid>/handoff/`). |
 | `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
 | `baton update` | Updates baton to the latest version and refreshes `SKILL.md` and `/baton` in all installed agents. |
 

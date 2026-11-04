@@ -73,6 +73,7 @@ func TestExtractUTF8StringsFromPB(t *testing.T) {
 
 func TestEncryptDecryptAndBackupRoundtrip(t *testing.T) {
 	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
 	origSession := &ParsedSession{
 		Agent:          "claude",
 		SessionID:      "claude-test-1",
@@ -318,7 +319,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	t.Setenv("CURSOR_HOME", filepath.Join(tmp, "cursor-home"))
 	t.Setenv("CURSOR_AGENT", "")
 	t.Setenv("CURSOR_CONVERSATION_ID", "")
-	// clearSavedSessions removes os.TempDir()/baton-handoff — keep it away from the real /tmp
+	// clearSavedSessions removes the handoff dir under os.TempDir() — keep it away from the real /tmp
 	t.Setenv("TMPDIR", filepath.Join(tmp, "tmp"))
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {

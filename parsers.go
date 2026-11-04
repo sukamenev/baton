@@ -232,10 +232,6 @@ func piSafeSessionDirName(cwd string) string {
 	return "--" + replacer.Replace(trimmed) + "--"
 }
 
-func handoffBaseDir() string {
-	return filepath.Join(os.TempDir(), "baton-handoff")
-}
-
 func cleanupOldHandoffs() {
 	base := handoffBaseDir()
 	entries, err := os.ReadDir(base)
@@ -819,23 +815,35 @@ func isCallerOwnSession(path string) bool {
 // discoverImportCandidates returns raw on-disk sessions of all agents for `baton import`,
 // skipping the caller's own running session and small "baton load" stub sessions
 // so that the numbering shown by `baton import` matches `baton import <#>`.
+// Each candidate gets its active context size; sizes and stub flags come from
+// a per-user cache when the log has not changed since it was last measured.
 func discoverImportCandidates() []SessionCandidate {
-	var out []SessionCandidate
+	var pending []SessionCandidate
 	for _, c := range discoverSessions("all", "") {
-		if len(out) >= importListLimit {
-			break
+		if !isCallerOwnSession(c.Path) {
+			pending = append(pending, c)
 		}
-		if isCallerOwnSession(c.Path) {
-			continue
+	}
+	cache := loadImportCache()
+	fresh := make(map[string]importMeta)
+	var out []SessionCandidate
+	for len(out) < importListLimit && len(pending) > 0 {
+		n := importListLimit - len(out)
+		if n > len(pending) {
+			n = len(pending)
 		}
-		realPath := strings.SplitN(c.Path, "::", 2)[0]
-		if info, err := os.Stat(realPath); err == nil && info.Size() < 4*1024*1024 && !strings.Contains(c.Path, "::") {
-			if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil && isHandoffStubSession(ps) {
+		batch := pending[:n]
+		pending = pending[n:]
+		for i, m := range measureCandidates(batch, cache, fresh) {
+			if m.Stub {
 				continue
 			}
+			c := batch[i]
+			c.Size = m.Context
+			out = append(out, c)
 		}
-		out = append(out, c)
 	}
+	saveImportCache(fresh)
 	return out
 }
 
