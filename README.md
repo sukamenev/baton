@@ -7,80 +7,51 @@
 
 ![baton — Lossless Session Handoff Across CLI Coding Agents](images/baton.png)
 
-`baton` is a zero-dependency Go CLI tool and `SKILL.md` agent skill for **Linux, macOS, and Windows** that passes session context between **Claude Code (`claude`)**, **OpenAI Codex CLI (`codex`)**, **Antigravity CLI (`agy`)**, **Pi (`pi`)**, **OpenCode (`opencode`)**, and **Cursor (`cursor`, IDE agent and `agent` CLI)** without losing history when 5-hour quota limits run out — or transfers an active local session (along with uncommitted files and rule configs) to another laptop with client-side **AES-256-GCM** encryption.
+`baton` moves a coding-agent session to another agent without losing history: for example, when Claude Code hits its 5-hour quota mid-task, you continue the same session in Codex. It can also move a session to another computer, together with uncommitted files, encrypted end to end.
 
-Unlike always-on MCP servers that stay resident in memory and inject tool schemas into every conversation's system prompt, `baton` uses **progressive skill loading (`SKILL.md`) + one-shot CLI execution**: zero background daemons, zero idle token overhead, and 20ms execution only when you actually hand off a session.
+baton is a small Go program plus an agent skill (`SKILL.md`) for **Linux, macOS, and Windows**. It has no dependencies, runs no background processes, and costs no tokens until you hand off a session.
 
----
+## Supported agents
 
-## Why `baton`?
+| Agent | Name in baton commands |
+|---|---|
+| Claude Code | `claude` |
+| OpenAI Codex CLI | `codex` |
+| Antigravity CLI | `agy` |
+| Pi | `pi` |
+| OpenCode | `opencode` |
+| Cursor (IDE agent and `agent` CLI) | `cursor` |
+| Kimi Code (CLI and Desktop), experimental | `kimi` |
 
-The common advice for switching agents is to ask the current model to write a `HANDOFF.md` file before quitting. In practice, that approach is suboptimal for three reasons:
+Running DeepSeek, GLM, Grok, or local models? Run them inside Pi or OpenCode, and baton hands sessions to them from Claude or Codex.
 
-1. **Hard quota walls.** When your 5-hour subscription window hits zero mid-debug, the agent refuses further prompts and cannot generate a summary file.
-2. **Lossy LLM summarization.** Input context windows reach 200k–1M tokens, whereas max output tokens are capped at 8k–32k. That output ceiling forces aggressive lossy compression: exact compiler flags, line numbers, rejected hypotheses, and subtle edits are dropped, degrading the quality of work in the next agent.
-3. **5x output token cost.** Output tokens typically cost 5 times more than input tokens and burn through remaining subscription quota 5 times faster.
+## Why not just ask the agent for a summary?
 
-`baton` reads the raw session files stored on disk by the previous agent, locates the latest `/compact` checkpoint, extracts the complete list of modified files and shell commands since turn 1, unpacks the full lossless transcript into the OS temporary directory (`/tmp/baton-<uid>/handoff/<session_id>/` on Linux/macOS or `%TEMP%\baton\handoff\<session_id>\` on Windows, a private per-user folder, keeping your project directory and `git status` clean), and prints a structured handoff summary for the next agent.
+The usual advice is to have the agent write a `HANDOFF.md` before you switch. That falls short in three ways:
 
-```text
-┌──────────────────────┐       Raw Disk Logs (.jsonl / .pb / .db)      ┌──────────────────────┐
-│  Claude / Codex /    │ ────────────────────────────────────────────► │        baton         │
-│ AGY / Pi / OpenCode  │   1. Locate latest /compact checkpoint        │ (One-Shot Go CLI +   │
-│  / Cursor            │   2. Unpack full log -> /tmp/baton-<uid>/     │      SKILL.md)       │
-│  (Quota Exhausted)   │   3. Print compact summary + file manifest    └──────────┬───────────┘
-└──────────────────────┘                                                          │
-                                                                                  ▼
-                                                                       ┌──────────────────────┐
-                                                                       │   Next CLI Agent     │
-                                                                       │  Resumes on exact    │
-                                                                       │  line of code        │
-                                                                       └──────────────────────┘
-```
+1. **Hard quota walls.** When the quota runs out mid-task, the agent cannot write anything anymore.
+2. **Lossy summaries.** A summary squeezes a 200k–1M token context into a few thousand output tokens. Exact flags, line numbers, rejected hypotheses, and small edits get lost.
+3. **Cost.** Output tokens cost about 5 times more than input tokens and burn the remaining quota faster.
 
----
+baton reads the session log that the agent already keeps on disk. It hands the next agent the latest `/compact` summary, every turn after it, and the list of modified files and commands. The full transcript stays available on request. See [How baton works](docs/INTERNALS.md) for details.
 
-## Supported Agents & Cross-Platform Storage Schemas
+## Installation
 
-| Agent | Session Location (Linux / macOS / Windows) | Format | Compaction & Lineage |
-|---|---|---|---|
-| **Claude Code** (`claude`) | `~/.claude/projects/<slug>/<uuid>.jsonl` (`$CLAUDE_CONFIG_DIR`) | JSONL (`text`, `thinking`, `tool_use`, `tool_result`, `custom-title`) | `type: "summary"` or `isCompactSummary` |
-| **Codex CLI** (`codex`) | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` & `session_index.jsonl` (`$CODEX_HOME`) | JSONL (Responses API & shell events) | `type: "compaction"` or `<context_summary>` |
-| **Antigravity CLI** (`agy`) | `~/.gemini/antigravity-cli/brain/<uuid>/.../transcript.jsonl` & `conversations/*.pb` | JSONL & schema-less Protobuf wire format | `CHECKPOINT` / embedded summary block |
-| **Pi** (`pi`) | `~/.pi/agent/sessions/--<cwd-slug>--/<ts>_<id>.jsonl` (`$PI_CODING_AGENT_DIR`) | v3 Tree JSONL (`id`, `parentId`, `session_info`, `bashExecution`) | `type: "compaction"` (`firstKeptEntryId`, `details.modifiedFiles`) |
-| **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` on every OS (`$XDG_DATA_HOME`) | SQLite (`session_v2` + `session_message` tables in OpenCode 2.x; `session`/`message`/`part` in 1.x), read via the `sqlite3` command | `compaction` message with `summary` (manual `/compact` and auto-compaction) |
-| **Cursor** (`cursor`) | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` (IDE and `agent` CLI). Title and folder: `~/.cursor/chats/<workspace>/<uuid>/meta.json` | JSONL (`role` + `message.content` `text` / `tool_use`) | `compaction/segment_*.md` beside the jsonl (curated summary + verbatim turns). The jsonl is the post-compaction tail |
-
-Cursor support reads the JSONL layout shown above and optional Markdown compaction
-segments; older or other storage layouts are not parsed. Commands and modified-file
-lists come from JSONL tool calls; historical Markdown turns remain available in the
-full transcript. `baton install` installs the skill in `~/.cursor/skills/baton/`.
-Cursor also supports [manual skill invocation from the `/` menu](https://cursor.com/docs/skills).
-The separate `commands/baton.md` slash-command file is installed for Claude Code.
-
-> **Using DeepSeek, GLM, Grok, or Ollama?** Most developers run those models inside **Pi** or **OpenCode**. Because `baton` natively supports both `pi` and `opencode`, you can hand off a session from a $20 Claude/Codex subscription directly to DeepSeek V3/R1, GLM, or Grok.
-
----
-
-## Quick Install (AI-Assisted From Source)
-
-`baton` is written in pure Go using **only the standard library** (`go.mod` has zero external dependencies). Ask your current agent to audit, build, and configure `baton` for all agents on your machine in one prompt:
+Ask your current agent to install baton (it builds baton from source; Go is required):
 
 ```text
-Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode, cursor). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
+Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode, cursor, kimi). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
 ```
 
 <details>
 <summary><b>Russian Prompt (Промпт на русском языке)</b></summary>
 
 ```text
-Прочитай https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md и установи инструмент baton из исходного кода для всех найденных у меня консольных агентов (claude, codex, agy, pi, opencode, cursor). Проверь наличие компилятора Go, собери бинарник в ~/.local/bin/baton, выполни baton install для установки навыка SKILL.md и слэш-команды /baton, а затем проверь работоспособность вызовом baton status.
+Прочитай https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md и установи инструмент baton из исходного кода для всех найденных у меня консольных агентов (claude, codex, agy, pi, opencode, cursor, kimi). Проверь наличие компилятора Go, собери бинарник в ~/.local/bin/baton, выполни baton install для установки навыка SKILL.md и слэш-команды /baton, а затем проверь работоспособность вызовом baton status.
 ```
 </details>
 
-### Manual Build & Install (3 Commands)
-
-Ensure Go 1.22+ is installed (`dev-lang/go` on Calculate/Gentoo, `go` on Arch/openSUSE, `golang-go` on Debian/Ubuntu, `golang` on Fedora):
+Or install manually (Go 1.22+):
 
 ```bash
 git clone https://github.com/sukamenev/baton.git /tmp/baton
@@ -88,141 +59,84 @@ cd /tmp/baton && go build -ldflags="-s -w" -o ~/.local/bin/baton .
 ~/.local/bin/baton install
 ```
 
-### Safe Updates (`latest.txt` Check + Two-Stage `baton update`)
-
-Once every 24 hours on normal CLI invocations, `baton` spawns a detached `baton update --check-quiet` process that fetches [`latest.txt`](latest.txt) with a 3-second timeout. If offline or up to date, it **exits immediately with zero output and zero errors**. If a newer version is available, `baton` prints a one-line notice (`Run 'baton update' to upgrade`, or upgrades automatically if you set `BATON_AUTO_UPDATE=1`).
-
-Running `baton update` upgrades baton in place:
-1. **If Go is installed:** rebuilds baton from source.
-2. **Otherwise:** downloads the release binary for your OS from GitHub Releases, verifies its SHA-256 checksum, and replaces the executable.
-
-The new version then refreshes `SKILL.md` and `/baton` in all installed agents.
-
-> **Upgrading from v0.3.4 or older:** if Go is installed, the old `baton update` did not replace `~/.local/bin/baton`. Reinstall once following [INSTALL.md](INSTALL.md).
-
----
+baton checks for new versions once a day and tells you when one is out; `baton update` upgrades it.
 
 ## Usage
 
-Explicit `baton` commands always invoke Baton. For natural-language requests,
-mention Baton or ask to save or transfer a session for use in another agent or
-on another computer. Generic requests to find, list, name, save, or resume
-sessions do not activate the skill.
+Talk to your agent in plain words and mention baton, or run `baton` commands directly. Requests that don't mention baton (or saving a session for another agent or computer) don't activate the skill.
 
-### 1. Recommended Workflow: `baton save` & `baton load`
+### Hand a session to another agent
 
-Before switching agents, save your active session into baton's store under a memorable name (`baton save my_session`; without a name, the current folder name is used):
+1. In the current agent, save the session:
 
-```text
-Save this session as my_session using baton
-```
+   ```text
+   Save this session as my_session using baton
+   ```
 
-`baton save` outputs a ready-to-paste prompt that works even in an agent where `baton` has never been installed yet:
+   baton prints a ready-to-paste prompt for the next agent. It works even where baton is not installed yet.
 
-```text
-Load session my_session using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
-```
+2. Open the next agent in the same folder and ask:
 
-When `claude` hits its 5-hour quota limit, open `codex`, `agy`, `pi`, `opencode`, or Cursor and ask in plain words (you don't even need to specify which agent had the session):
+   ```text
+   Continue session my_session using baton
+   ```
 
-```text
-Continue session my_session using baton
-```
+   Or just *"Continue the latest session using baton"*. In Claude Code you can also type `/baton load my_session`.
 
-Or to grab the most recently saved session:
+> **Start from a clean context.** If the agent already has a conversation going, start a new one first (`/clear` in Claude Code and agy, `/new` in Codex). Otherwise the loaded session lands on top of the old one.
 
-```text
-Continue the latest session using baton
-```
+### Find a saved session
 
-Or via the Claude Code slash command:
+Ask *"What sessions are saved in baton?"* or run `baton list`. Each session is shown on one line like this, with its folder and your last prompt below:
 
-```text
-/baton load my_session
-```
+**#1** 2026-10-31 00:37 [claude] **my_session** · 384 KB · id 726d401d
 
-> **Load into a clean context.** If the agent already has a conversation going, start a new one first (`/clear` in Claude Code and agy, `/new` in Codex), then ask to load the session. Otherwise the loaded session lands on top of the old conversation: two tasks get mixed and the context window fills up faster. A freshly launched agent needs nothing extra. The same applies to `baton import`.
+Then say *"Load session #1"*, or *"Load session 726d401d"* (numbers change as new sessions appear; IDs don't).
 
-**Forgot the session name?** Ask the agent *"What sessions are saved in baton?"* (or run `baton list`). It shows a numbered list of sessions saved into baton, newest first, with save time, agent, name, context size, session ID, folder, and the last prompt, so you can simply say *"Load session #1"* (or run `/baton load 1`):
+### The session was never saved
 
-```text
-/baton load 1
-```
-
-**The agent hit its limit before you ran `baton save`?** Ask the next agent *"Use baton to list sessions available for import"* (or run `baton import`). Without arguments, `baton import` only shows a list and never imports anything by itself. Unlike `baton load`, it lists the 15 most recent sessions of all supported agents on disk (current folder first), each with the last prompt, i.e. where the work stopped. Pick one by number, name, or session ID:
+If the agent hit its limit before you saved, ask the next agent *"Use baton to list sessions available for import"* or run `baton import`. It lists the 15 most recent sessions of all agents, current folder first. Then import one by number, name, or ID; it is saved into baton and loaded:
 
 ```text
 baton import 1
-baton import my_session
-baton import 726d401d
 baton import 7 as my_session
 ```
 
-The chosen session is saved into baton and loaded right away; afterwards it appears in `baton list`. If you renamed the session in the agent itself, that name is shown in the list and used when saving.
+> **Tip: see the list yourself.** In Claude Code, Codex CLI, OpenCode, agy, and the Cursor CLI, type `!baton list` or `!baton import`: the `!` prefix runs the command without the model. You see the list exactly as baton printed it, and the agent spends no tokens on it. Then tell the agent *"Load session #2"*.
 
-> **Tip: show the list yourself.** In Claude Code, Codex CLI, OpenCode, agy, and the Cursor CLI you can run `!baton list` or `!baton import` straight from the prompt: the `!` prefix runs the command in the agent's shell without asking the model. You see the list exactly as baton printed it, and the agent spends no tokens loading the skill and re-printing the list. Then tell the agent *"Load session #2"* (or *"Import session #2"*): baton resolves the number itself, so the agent doesn't need to see the list. The Cursor IDE chat has no `!` prefix.
+### Move a session to another computer
 
-Each list row looks like **#1** 2026-10-31 00:37 [claude] **my_session** · 384 KB · id 726d401d, with the folder and the last prompt below it. In `baton list` the size is the active context that `baton load` hands to the next agent (the latest `/compact` summary plus everything after it), measured in baton's own format, so it is comparable across agents and survives transfers between agents and machines. `baton import` shows the same size for raw sessions; measuring it means parsing each log, so the result is cached in `/tmp/baton-<uid>/cache/` and an unchanged session is not parsed again. The ID is the agent's own session ID (first 8 characters) and stays the same in `baton list` and `baton import`. Numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`. To import a session without loading it, add `--no-load`: `baton import 726d401d as my_session --no-load`.
-
-`baton save` always saves the current session; to save any other session under a name, use `baton import <#|id> as <name>`.
-
-### 2. Encrypted Cross-Machine Transfer (Desktop -> Laptop)
-
-Need to leave your desktop and continue on your laptop without committing broken WIP code to Git (or working in a folder with Fossil, SVN, or no VCS)?
-
-`baton` packs four components into a single in-memory `tar.gz` stream (`archive/tar` + `compress/gzip`, built directly into the binary for Windows, macOS, and Linux) and encrypts it client-side with `AES-256-GCM`:
-- Full session transcript and compaction state;
-- All uncommitted/untracked workspace files modified during the session (detected via agent tool history + Git/Fossil/SVN status);
-- Project-level unversioned rule files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.agents/rules/`);
-- A snapshot of your global user instructions (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`).
-
-In your active agent, type:
+In the current agent:
 
 ```text
 /baton push
 ```
 
-`baton` encrypts the archive locally and uploads the ciphertext through an automatic zero-config fallback chain (`paste.rs` -> `dpaste.org` -> `termbin.com:9999`, or a local synced folder like Dropbox/Google Drive/Syncthing), returning a self-contained transfer token and a self-bootstrapping prompt:
+baton packs the session, the files changed during it (even uncommitted ones), and your rule files. It encrypts the bundle on your machine, uploads it, and prints a link like `https://paste.rs/x9K2m#8f4a…`. The key after `#` never leaves your machine. On the other computer, open the project folder in any agent and run:
 
 ```text
-Encrypted session URL / token:
-  https://paste.rs/x9K2m#8f4a2c91e7b03d...
-
-To continue in another agent or on a machine where baton is not installed yet, paste this prompt:
-  Load session https://paste.rs/x9K2m#8f4a2c91e7b03d... using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)
-or if baton is already installed, run:
-  /baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
+/baton load https://paste.rs/x9K2m#8f4a…
 ```
 
-> **Zero-Knowledge Transport:** The 256-bit hex key after `#` stays in the URL fragment and is never transmitted to the paste server.
+Local files that differ are kept as `.baton.bak`.
 
-On your laptop, open the project folder in any agent and run the exact same `load` command with the URL:
+> **Codex sandbox:** if Codex blocks the network, type `!baton load "<URL>"` at the Codex prompt, then `baton load`.
 
-```text
-/baton load https://paste.rs/x9K2m#8f4a2c91e7b03d...
-```
-
-`baton` downloads and decrypts the bundle, restores modified files (creating `.baton.bak` backups if any local file differs), places global rules from the source machine into `/tmp/baton-<uid>/handoff/<session_id>/global_rules/`, saves the downloaded session into Baton's saved sessions store (`~/.config/baton/saved/` so subsequent `baton load` or `baton list` calls work offline without re-downloading), and loads the full active session context.
-
-> **Codex CLI Sandbox Note:** If Codex CLI's workspace sandbox blocks network access during a remote `baton load <URL>` and policy rejects permission escalation, run `!baton load "<URL>"` directly at the Codex prompt (with a leading exclamation mark `!`) to download and save the bundle into `~/.config/baton/saved/`, and then type `baton load`.
-
----
-
-## CLI Commands Reference
+## Commands
 
 | Command | Description |
 |---|---|
-| `baton save [name]` | Saves the current session into baton (`~/.config/baton/saved/`) under a name, the folder name by default, and prints a ready-to-paste prompt for the next agent. If another session already has that name, this one is saved as `name-2`. |
-| `baton push [name]` | Saves the current session locally, packs (`tar.gz`), encrypts (`AES-256-GCM`), and uploads the session + uncommitted files + rules, returning an encrypted URL with `#key`. |
-| `baton load [name\|#\|id\|URL\|token]` | With no arguments (`baton load`), always loads the most recently saved session from Baton's saved store (`~/.config/baton/saved/`); also loads by name (`baton load my_session`), number (`baton load 1`), session ID (`baton load 726d401d`), or remote URL/token (`baton load https://...#key`). |
-| `baton list [agent] [query]` | Lists numbered saved Baton sessions (`#1`, `#2`, ...), newest first. |
-| `baton import [#\|name\|id] [as name] [--no-load]` | Lists recent sessions of all agents (`#1`, `#2`, ...); with a number, name, or session ID, saves that session into baton (under the `as` name, if given) and loads it (`--no-load`: only saves). For sessions that were never saved. |
-| `baton rm <name\|#>` | Deletes one saved session (exact name or number from `baton list`). The agent's own session log is not touched. |
-| `baton clear` | Removes all locally saved Baton sessions (`~/.config/baton/saved/`) and temporary handoff files (`/tmp/baton-<uid>/handoff/`). |
-| `baton turn <session_id> <turn_id>` | Prints the complete, untruncated output of any specific turn on demand. |
-| `baton update` | Updates baton to the latest version and refreshes `SKILL.md` and `/baton` in all installed agents. |
+| `baton save [name]` | Save the current session under a name (default: folder name) and print a prompt for the next agent. |
+| `baton load [name\|#\|id\|URL]` | Load a saved session; without arguments, the most recently saved one. |
+| `baton list [agent] [query]` | List saved sessions, newest first. |
+| `baton import [#\|name\|id] [as name] [--no-load]` | List recent sessions of all agents, or save one into baton and load it. |
+| `baton push [name]` | Encrypt and upload the session with changed files; prints a link for `baton load`. |
+| `baton rm <name\|#>` | Delete a saved session. The agent's own log is not touched. |
+| `baton clear` | Delete all saved sessions and temporary files. |
+| `baton turn <session_id> <turn_id>` | Print one turn of a session in full. |
+| `baton update` | Update baton and the installed skills. |
 
----
+Session formats, size measurement, encryption, and other details: [docs/INTERNALS.md](docs/INTERNALS.md).
 
 ## License
 
