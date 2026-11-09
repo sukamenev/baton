@@ -16,6 +16,17 @@ type kimiSessionState struct {
 	WorkDir    string `json:"workDir"`
 	Title      string `json:"title"`
 	LastPrompt string `json:"lastPrompt"`
+	// IsCustomTitle is true only when the user renamed the session; otherwise
+	// Kimi fills title with the first prompt, which is not a name.
+	IsCustomTitle bool `json:"isCustomTitle"`
+}
+
+// name is the session name the user gave in Kimi, or "".
+func (s kimiSessionState) name() string {
+	if !s.IsCustomTitle {
+		return ""
+	}
+	return strings.TrimSpace(s.Title)
 }
 
 func kimiBaseDir(home string) string {
@@ -89,7 +100,7 @@ func discoverKimiSessions(root string, aliases map[string]string, query string) 
 		}
 		title := aliases[path]
 		if title == "" {
-			title = strings.TrimSpace(state.Title)
+			title = state.name()
 		}
 		preview := truncateInline(cleanUserPrompt(state.LastPrompt), 140)
 		if query != "" && !candidateMatchesQuery(path, title, preview, query) {
@@ -189,7 +200,7 @@ func kimiCompactionSummary(row map[string]interface{}) string {
 func parseKimiSession(path string, ps *ParsedSession) error {
 	state := readKimiSessionState(kimiSessionDir(path))
 	if ps.Title == "" {
-		ps.Title = strings.TrimSpace(state.Title)
+		ps.Title = state.name()
 	}
 	if ps.CWD == "" {
 		ps.CWD = state.CWD

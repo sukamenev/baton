@@ -15,7 +15,7 @@ func writeKimiFixture(t *testing.T, root, bucket, id, title, prompt, answer stri
 	if err := os.MkdirAll(wireDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	state := `{"id":"session_` + id + `","version":2,"cwd":"/work/` + id + `","title":"` + title + `","lastPrompt":"` + prompt + `"}`
+	state := `{"id":"session_` + id + `","version":2,"cwd":"/work/` + id + `","title":"` + title + `","lastPrompt":"` + prompt + `","isCustomTitle":true}`
 	if err := os.WriteFile(filepath.Join(sessionDir, "state.json"), []byte(state), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -73,6 +73,34 @@ func TestKimiClearStartsNewContext(t *testing.T) {
 	}
 }
 
+// Kimi Code 2.5.2 titles a new session with its first prompt and marks it
+// isCustomTitle:false; only a title the user set is a session name.
+func TestKimiAutoTitleIsNotAName(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "wd_proj_5c52693f9a5a", "session_3033d0e7-97e8-491f-a47d-225799dfe637")
+	wire := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+	if err := os.MkdirAll(filepath.Dir(wire), 0755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"id":"session_3033d0e7-97e8-491f-a47d-225799dfe637","version":2,"cwd":"/work/proj","archived":false,"custom":{},"title":"The add function in calc.py is wrong. Read it, fix it","titleKind":"replaceable","lastPrompt":"Run the tests","lastTurnReason":"completed","isCustomTitle":false}`
+	if err := os.WriteFile(filepath.Join(sessionDir, "state.json"), []byte(state), 0600); err != nil {
+		t.Fatal(err)
+	}
+	row := `{"type":"agent.message.appended","time":1794232313460,"message":{"message":{"role":"user","content":[{"type":"text","text":"Run the tests"}]},"meta":{"origin":{"kind":"user"}}}}`
+	if err := os.WriteFile(wire, []byte(row+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
+	cands := discoverKimiSessions(root, map[string]string{}, "")
+	if len(cands) != 1 || cands[0].Title != "" || cands[0].Preview != "Run the tests" || cands[0].CWD != "/work/proj" {
+		t.Fatalf("unexpected candidate: %+v", cands)
+	}
+	ps, err := parseSessionFile("kimi", wire, time.Now())
+	if err != nil || ps.Title != "" {
+		t.Fatalf("auto title used as name: %v %q", err, ps.Title)
+	}
+}
+
 func TestCallerCommandLines(t *testing.T) {
 	for _, tc := range []struct {
 		cmd   string
