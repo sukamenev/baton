@@ -525,6 +525,7 @@ func detectCallerAgent() string {
 	if os.Getenv("ANTIGRAVITY_CLI") != "" {
 		return "agy"
 	}
+	// Kimi Code exports no marker to its shell; it is found by its process below.
 	// Walk parent process tree on Linux/macOS if available
 	pid := os.Getppid()
 	for depth := 0; depth < 12 && pid > 1; depth++ {
@@ -550,7 +551,13 @@ func detectCallerAgent() string {
 			break
 		}
 		lower := strings.ToLower(string(bytes.ReplaceAll(cmdline, []byte{0}, []byte{' '})))
+		if isShellCommandLine(lower) {
+			// `sh -c "cd /path/to/claude-tools && baton save"`: the folder name
+			// says nothing about the agent; the agent is further up the chain.
+			lower = ""
+		}
 		switch {
+		case lower == "":
 		case strings.Contains(lower, "cursor-agent") || strings.Contains(lower, "cursor agent"):
 			return "cursor"
 		case strings.Contains(lower, "opencode"):
@@ -561,6 +568,8 @@ func detectCallerAgent() string {
 			return "codex"
 		case strings.Contains(lower, "antigravity") || strings.Contains(lower, "/agy ") || strings.HasSuffix(strings.TrimSpace(lower), "/agy"):
 			return "agy"
+		case isKimiCmdline(lower):
+			return "kimi"
 		}
 		statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 		if err != nil {
@@ -1281,13 +1290,17 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), aliases, query)...)
 	}
 
+	if agent == "all" || agent == "kimi" {
+		all = append(all, discoverKimiSessions(kimiBaseDir(home), aliases, query)...)
+	}
+
 	// Include sessions imported from remote URLs via `baton load <URL>`
 	importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
 	if importFiles, err := filepath.Glob(filepath.Join(importDir, "*.baton.json")); err == nil {
 		for _, m := range importFiles {
 			ag := "imported"
 			base := filepath.Base(m)
-			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor"} {
+			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi"} {
 				if strings.HasPrefix(base, known+"-") {
 					ag = known
 					break
@@ -1544,13 +1557,16 @@ func lastUserPromptInTail(f *os.File, tailBytes int64) string {
 }
 
 // userPromptFromRow extracts the text typed by the user from one JSONL row of any
-// supported agent (Claude, Codex, AGY, Pi), skipping tool results and injected
-// meta/system messages.
+// supported agent, skipping tool results and injected meta/system messages.
 func userPromptFromRow(row map[string]interface{}) string {
 	if isMeta, _ := row["isMeta"].(bool); isMeta {
 		return ""
 	}
-	if typ, _ := row["type"].(string); typ == "USER_INPUT" {
+	typ, _ := row["type"].(string)
+	if typ == "context.append_message" || typ == "context.append_loop_event" {
+		return ""
+	}
+	if typ == "USER_INPUT" {
 		s, _ := row["content"].(string)
 		if i := strings.Index(s, "<USER_REQUEST>"); i >= 0 {
 			s = s[i+len("<USER_REQUEST>"):]
@@ -1561,6 +1577,25 @@ func userPromptFromRow(row map[string]interface{}) string {
 		return cleanUserPrompt(s)
 	}
 	msg, _ := row["message"].(map[string]interface{})
+	if typ == "agent.message.appended" && msg != nil {
+		// Kimi Code history entry: {"message": {...}, "meta": {"origin": ...}}.
+		entry := msg
+		if msg, _ = entry["message"].(map[string]interface{}); msg == nil {
+			return ""
+		}
+		if kind := kimiOriginKind(entry, msg); kind != "" && kind != "user" {
+			return ""
+		}
+		if parts, ok := msg["content"].([]interface{}); ok {
+			var typed []interface{}
+			for _, item := range parts {
+				if part, _ := item.(map[string]interface{}); part != nil && !kimiInjectedPart(part) {
+					typed = append(typed, part)
+				}
+			}
+			msg = map[string]interface{}{"role": msg["role"], "content": typed}
+		}
+	}
 	if msg == nil {
 		msg, _ = row["payload"].(map[string]interface{})
 	}
@@ -1590,6 +1625,46 @@ func userPromptFromRow(row map[string]interface{}) string {
 		}
 	}
 	return ""
+}
+
+// isShellCommandLine reports a shell running a command string (`sh -c ...`,
+// `bash -lc ...`), as agents launch tool commands.
+func isShellCommandLine(lower string) bool {
+	fields := strings.Fields(lower)
+	if len(fields) < 2 || !strings.HasPrefix(fields[1], "-") || strings.HasPrefix(fields[1], "--") || !strings.Contains(fields[1], "c") {
+		return false
+	}
+	switch filepath.Base(fields[0]) {
+	case "sh", "bash", "zsh", "dash", "fish", "ksh":
+		return true
+	}
+	return false
+}
+
+// isKimiCmdline recognizes the Kimi Code CLI in a lowercased, space-joined
+// command line: its `kimi` launcher (often run as `node .../bin/kimi`) or the
+// package's dist/main.mjs entry point.
+func isKimiCmdline(lower string) bool {
+	if strings.Contains(lower, "kimi-code/dist/") || strings.Contains(lower, `kimi-code\dist\`) {
+		return true
+	}
+	fields := strings.Fields(lower)
+	if len(fields) == 0 {
+		return false
+	}
+	isKimi := func(f string) bool {
+		base := filepath.Base(filepath.ToSlash(f))
+		return base == "kimi" || base == "kimi.exe"
+	}
+	if isKimi(fields[0]) {
+		return true
+	}
+	// The launcher is a script, so the process is often `node .../bin/kimi`.
+	switch strings.TrimSuffix(filepath.Base(filepath.ToSlash(fields[0])), ".exe") {
+	case "node", "bun", "deno":
+		return len(fields) > 1 && isKimi(fields[1])
+	}
+	return false
 }
 
 // lastUserPromptInTurns returns the most recent prompt the user typed, skipping
@@ -1651,6 +1726,9 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 	}
 
 	base := strings.TrimSuffix(filepath.Base(realPath), filepath.Ext(realPath))
+	if agent == "kimi" {
+		base = strings.TrimPrefix(filepath.Base(kimiSessionDir(realPath)), "session_")
+	}
 	if explicitSessionID != "" {
 		base = explicitSessionID
 	} else if base == "transcript_full" || base == "transcript" {
@@ -1703,6 +1781,9 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 		return ps, err
 	case "cursor":
 		err := parseCursorSession(realPath, ps)
+		return ps, err
+	case "kimi":
+		err := parseKimiSession(realPath, ps)
 		return ps, err
 	case "agy":
 		err := parseAgyTranscriptJSONL(realPath, ps)
