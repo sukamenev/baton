@@ -48,6 +48,13 @@ type ParsedSession struct {
 	// LastPrompt is the list preview, fixed at save time: snapshots keep only
 	// the turns after the last compaction, so the earlier prompt is lost later.
 	LastPrompt string `json:"last_prompt,omitempty"`
+	// Format is the snapshot format (snapshotFormat); SavedBy is the baton version
+	// that wrote it. A baton that meets a newer format asks to be updated.
+	Format  int    `json:"format,omitempty"`
+	SavedBy string `json:"saved_by,omitempty"`
+	// VersionOf marks an older version of a saved session: a newer session took
+	// its name and this snapshot was renamed to <name>.<date>.
+	VersionOf string `json:"version_of,omitempty"`
 }
 
 type SessionCandidate struct {
@@ -59,6 +66,8 @@ type SessionCandidate struct {
 	Preview string
 	ID      string // agent's own session ID; derived from Path when empty
 	Size    int    // active context size in bytes (0: unknown, not shown)
+	// VersionOf is set on older versions of a saved session (hidden from lists).
+	VersionOf string
 }
 
 // activeContextSize is the size of what `baton load` hands to the next agent:
@@ -269,10 +278,9 @@ func sanitizeSessionFileName(name string) string {
 	return safe
 }
 
-// savedSessionPath picks the store file for a session saved under name. A file that
-// already holds a different session is never overwritten: the name gets a numeric
-// suffix instead (BookTrans-2, BookTrans-3, ...). Re-saving the same session
-// (same session_id) updates its existing file in place.
+// savedSessionPath picks the store file for a session saved under name with a
+// numeric suffix when the name holds a different session (BookTrans-2, ...).
+// Only imports under an agent's own title use it; see saveSessionToBatonStore.
 func savedSessionPath(dir, name, sessionID string) (string, string) {
 	for n := 1; ; n++ {
 		candidate := name
@@ -280,23 +288,40 @@ func savedSessionPath(dir, name, sessionID string) (string, string) {
 			candidate = fmt.Sprintf("%s-%d", name, n)
 		}
 		path := filepath.Join(dir, sanitizeSessionFileName(candidate)+".baton.json")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return path, candidate
-		}
-		var existing struct {
-			SessionID string `json:"session_id"`
-		}
-		if json.Unmarshal(data, &existing) != nil || existing.SessionID == "" || existing.SessionID == sessionID {
+		if id, ok := savedSnapshotSessionID(path); !ok || id == "" || id == sessionID {
 			return path, candidate
 		}
 	}
 }
 
-// saveSessionToBatonStore writes a session snapshot into Baton's saved store and
-// returns the file path and the final session name (which may carry a -N suffix
-// if another session already uses the requested name).
+// savedSnapshotSessionID returns the session_id stored in a saved snapshot;
+// ok is false when the file does not exist or is not a snapshot.
+func savedSnapshotSessionID(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var existing struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal(data, &existing) != nil {
+		return "", false
+	}
+	return existing.SessionID, true
+}
+
+// saveSessionToBatonStore writes a session snapshot into Baton's saved store under
+// name and returns the file path and the final name. If the name holds a
+// different session, that snapshot becomes an older version (<name>.<date>) and
+// the new one takes the name: the name always means the latest point of the work.
 func saveSessionToBatonStore(ps *ParsedSession, name string) (string, string, error) {
+	return saveSessionToBatonStoreMode(ps, name, true)
+}
+
+// saveSessionToBatonStoreMode is saveSessionToBatonStore; with replace=false a
+// name held by a different session gets a numeric suffix instead (used when the
+// name is only an agent's own title, which unrelated sessions often share).
+func saveSessionToBatonStoreMode(ps *ParsedSession, name string, replace bool) (string, string, error) {
 	if ps == nil {
 		return "", "", fmt.Errorf("parsed session is nil")
 	}
@@ -315,11 +340,24 @@ func saveSessionToBatonStore(ps *ParsedSession, name string) (string, string, er
 		name = ps.SessionID
 	}
 
-	savePath, name := savedSessionPath(dir, name, ps.SessionID)
+	var savePath string
+	if replace {
+		savePath = filepath.Join(dir, sanitizeSessionFileName(name)+".baton.json")
+		if id, ok := savedSnapshotSessionID(savePath); ok && id != "" && id != ps.SessionID {
+			if err := keepOlderVersion(savePath, name); err != nil {
+				return "", "", err
+			}
+		}
+	} else {
+		savePath, name = savedSessionPath(dir, name, ps.SessionID)
+	}
 
 	cp := *ps
 	cp.Title = name
+	cp.VersionOf = ""
 	cp.ModTime = time.Now()
+	cp.Format = snapshotFormat
+	cp.SavedBy = version
 	if cp.CWD == "" {
 		if cwd, err := os.Getwd(); err == nil && cwd != "" {
 			cp.CWD = cwd
@@ -342,6 +380,7 @@ func saveSessionToBatonStore(ps *ParsedSession, name string) (string, string, er
 		aliases[ps.SourceFile] = name
 	}
 	_ = saveAliases(aliases)
+	linkSavedOrigin(ps, name)
 	return savePath, name, nil
 }
 
@@ -376,9 +415,11 @@ func removeSavedSession(query string) (string, error) {
 	if idx, ok := parseCandidateIndex(query, len(saved)); ok {
 		chosen = &saved[idx]
 	}
-	for i := range saved {
-		if chosen == nil && strings.EqualFold(saved[i].Title, query) {
-			chosen = &saved[i]
+	// Names also reach older versions (<name>.<date>), which lists hide.
+	withVersions := savedSessions("all", "", true)
+	for i := range withVersions {
+		if chosen == nil && strings.EqualFold(withVersions[i].Title, query) {
+			chosen = &withVersions[i]
 		}
 	}
 	if chosen == nil {
@@ -394,11 +435,25 @@ func removeSavedSession(query string) (string, error) {
 		}
 	}
 	_ = saveAliases(aliases)
-	return fmt.Sprintf("Removed saved session **%s** ([%s] `%s`). The original agent session on disk is untouched.",
-		chosen.Title, chosen.Agent, filepath.Base(chosen.Path)), nil
+	msg := fmt.Sprintf("Removed saved session **%s** ([%s] `%s`). The original agent session on disk is untouched.",
+		chosen.Title, chosen.Agent, filepath.Base(chosen.Path))
+	if chosen.VersionOf == "" {
+		if v := promoteNewestVersion(chosen.Title); v != "" {
+			msg += fmt.Sprintf(" The name **%s** now holds its previous version (was **%s**).", chosen.Title, v)
+		}
+	}
+	return msg, nil
 }
 
+// discoverSavedBatonSessions lists saved sessions newest first, without older
+// versions: its numbering is the one `baton list`, `load <#>` and `rm <#>` use.
 func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
+	return savedSessions(agent, query, false)
+}
+
+// savedSessions lists saved sessions newest first; withVersions adds the older
+// versions (<name>.<date>) that a newer session replaced.
+func savedSessions(agent, query string, withVersions bool) []SessionCandidate {
 	agent = strings.ToLower(strings.TrimSpace(agent))
 	if agent == "" || agent == "auto" {
 		agent = "all"
@@ -433,8 +488,12 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 				Summary     string        `json:"compact_summary"`
 				PostCompact []SessionTurn `json:"post_compact"`
 				LastPrompt  string        `json:"last_prompt"`
+				VersionOf   string        `json:"version_of"`
 			}
 			if json.Unmarshal(data, &meta) != nil {
+				continue
+			}
+			if meta.VersionOf != "" && !withVersions {
 				continue
 			}
 			ag := strings.ToLower(strings.TrimSpace(meta.Agent))
@@ -469,6 +528,8 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 				Preview: preview,
 				ID:      agentSessionID(strings.TrimPrefix(meta.SessionID, ag+"-")),
 				Size:    activeContextSize(meta.Summary, meta.PostCompact),
+
+				VersionOf: meta.VersionOf,
 			})
 		}
 	}
@@ -706,24 +767,28 @@ func parseCurrentSession() (*ParsedSession, error) {
 	return parseCandidate(selectCurrentSessionCandidate("all", candidates))
 }
 
+// nameSession implements `baton save [name]`. Without a name it reuses the name
+// this session already has in baton (it was loaded from or saved as that name),
+// then a name the user gave the session in the agent, then the folder name.
 func nameSession(name string) (string, error) {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", fmt.Errorf("session name cannot be empty")
-	}
 	ps, err := parseCurrentSession()
 	if err != nil {
 		return "", err
 	}
+	if name == "" {
+		name = defaultSaveName(ps)
+	}
+	before := savedVersionNames(name)
 	savePath, savedName, err := saveSessionToBatonStore(ps, name)
 	if err != nil {
 		return "", err
 	}
 	note := ""
-	if savedName != name {
-		note = fmt.Sprintf("\n\n> The name **%s** is already used by another saved session, so this one was saved as **%s**.", name, savedName)
+	if older := newVersionName(name, before); older != "" {
+		note = fmt.Sprintf("\n\nThe previous **%s** (another session) is kept as **%s**.", savedName, older)
 	}
-	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)%s\n\nTo continue in another agent, paste this prompt:\n  `Load session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton load %s`",
+	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)%s\n\nTo continue in another agent, paste this prompt:\n  `Resume session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton resume %s`",
 		savedName, ps.Agent, filepath.Base(ps.SourceFile), filepath.Base(savePath), note, savedName, savedName), nil
 }
 
@@ -947,14 +1012,28 @@ func importSession(args []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	savePath, savedName, err := saveSessionToBatonStore(ps, asName)
+	if !noLoad {
+		// List numbers depend on the folder, so the retry names the session by ID.
+		retry := "baton import " + shortSessionID(chosen.SessionID())
+		if asName != "" {
+			retry += " as " + asName
+		}
+		if err := checkSessionFolder(ps.CWD, retry, sameAgentNative(chosen)); err != nil {
+			return "", err
+		}
+	}
+	// An explicit name replaces the session saved under it (kept as an older
+	// version); an agent's own title gets a -N suffix instead, since unrelated
+	// sessions often share one.
+	before := savedVersionNames(asName)
+	savePath, savedName, err := saveSessionToBatonStoreMode(ps, asName, asName != "")
 	if err != nil {
 		return "", err
 	}
 	imported := fmt.Sprintf("Imported [%s] session %s into baton as **%s** (`%s`).",
 		chosen.Agent, shortSessionID(chosen.SessionID()), savedName, filepath.Base(savePath))
-	if asName != "" && savedName != asName {
-		imported += fmt.Sprintf(" The name **%s** is already used by another saved session.", asName)
+	if older := newVersionName(asName, before); asName != "" && older != "" {
+		imported += fmt.Sprintf(" The previous **%s** is kept as **%s**.", savedName, older)
 	}
 	if noLoad {
 		return imported + fmt.Sprintf(" Load it with `baton load %s`.", savedName), nil
@@ -967,12 +1046,34 @@ func importSession(args []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return imported + "\n\n" + formatHandoffSummary(saved, handoffDir, nil), nil
+	return imported + "\n\n" + formatHandoffSummary(saved, handoffDir, nil) + attachCurrentSession(savedName), nil
 }
 
-func listSessionsReport(agent, query string) string {
+// listSessionsReport implements `baton list [--all]`: older versions of saved
+// sessions are hidden unless --all is given (they never get list numbers).
+func listSessionsReport(agent, query string, all bool) string {
 	candidates := discoverSavedBatonSessions(agent, query)
-	return formatCandidateListReport(agent, "", candidates)
+	report := formatCandidateListReport(agent, "", candidates)
+	var versions []SessionCandidate
+	for _, c := range savedSessions(agent, query, true) {
+		if c.VersionOf != "" {
+			versions = append(versions, c)
+		}
+	}
+	if len(versions) == 0 {
+		return report
+	}
+	if !all {
+		return report + fmt.Sprintf("\n%d older version(s) of saved sessions are hidden: `baton list --all`.\n", len(versions))
+	}
+	var sb strings.Builder
+	sb.WriteString(report)
+	sb.WriteString("\n**Older versions** (load by name: `baton load <name>`):  \n")
+	for _, c := range versions {
+		sb.WriteString(fmt.Sprintf("%s [%s] **%s** · id %s  \n",
+			c.ModTime.Format("2006-01-02 15:04"), c.Agent, c.Title, shortSessionID(c.SessionID())))
+	}
+	return sb.String()
 }
 
 func loadSessionContext(agent, query string) (string, error) {
@@ -987,6 +1088,18 @@ func loadSessionContext(agent, query string) (string, error) {
 	}
 
 	parsed, err := findAndParseSession(agent, qTrim)
+	if err != nil && strings.Contains(err.Error(), "run `baton update`") {
+		return "", err
+	}
+	if err == nil {
+		retry := "baton load " + qTrim
+		if parsed.Title != "" {
+			retry = "baton load " + parsed.Title
+		}
+		if ferr := checkSessionFolder(parsed.CWD, retry, snapshotNative(parsed, parsed.ModTime)); ferr != nil {
+			return "", ferr
+		}
+	}
 	if err != nil {
 		// Fallback: if the user gave a name that doesn't match, return the numbered
 		// list of saved session candidates so they can see available saved sessions.
@@ -1000,7 +1113,7 @@ func loadSessionContext(agent, query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return formatHandoffSummary(parsed, handoffDir, nil), nil
+	return formatHandoffSummary(parsed, handoffDir, nil) + attachCurrentSession(chainName(parsed)), nil
 }
 
 func getSessionTurnDetails(sessionID string, turnID int) (string, error) {
@@ -1051,7 +1164,7 @@ func findAndParseSession(agent, query string) (*ParsedSession, error) {
 		return parseSessionFile(chosen.Agent, chosen.Path, chosen.ModTime)
 	}
 	qLower := strings.ToLower(query)
-	for _, c := range savedCandidates {
+	for _, c := range savedSessions(agent, "", true) {
 		if c.Title != "" && strings.EqualFold(c.Title, query) {
 			return parseSessionFile(c.Agent, c.Path, c.ModTime)
 		}
@@ -1717,14 +1830,9 @@ func cleanUserPrompt(s string) string {
 	return s
 }
 
-func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, error) {
-	realPath := path
-	explicitSessionID := ""
-	if parts := strings.SplitN(path, "::", 2); len(parts) == 2 {
-		realPath = parts[0]
-		explicitSessionID = parts[1]
-	}
-
+// sessionIDForPath is the session_id baton gives a raw session ("<agent>-<id>").
+func sessionIDForPath(agent, path string) string {
+	realPath, explicitSessionID, _ := strings.Cut(path, "::")
 	base := strings.TrimSuffix(filepath.Base(realPath), filepath.Ext(realPath))
 	if agent == "kimi" {
 		base = strings.TrimPrefix(filepath.Base(kimiSessionDir(realPath)), "session_")
@@ -1740,10 +1848,20 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 			}
 		}
 	}
+	return fmt.Sprintf("%s-%s", agent, base)
+}
+
+func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, error) {
+	realPath := path
+	explicitSessionID := ""
+	if parts := strings.SplitN(path, "::", 2); len(parts) == 2 {
+		realPath = parts[0]
+		explicitSessionID = parts[1]
+	}
 
 	ps := &ParsedSession{
 		Agent:      agent,
-		SessionID:  fmt.Sprintf("%s-%s", agent, base),
+		SessionID:  sessionIDForPath(agent, path),
 		SourceFile: realPath,
 		ModTime:    modTime,
 	}
@@ -1755,6 +1873,9 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 		}
 		var imported ParsedSession
 		if err := json.Unmarshal(data, &imported); err != nil {
+			return nil, err
+		}
+		if err := checkSnapshotFormat(&imported); err != nil {
 			return nil, err
 		}
 		imported.ModTime = modTime

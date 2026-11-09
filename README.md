@@ -70,12 +70,23 @@ Talk to your agent in plain words and mention baton, or run `baton` commands dir
 2. Open the next agent in the same folder and ask:
 
    ```text
-   Continue session my_session using baton
+   Resume session my_session using baton
    ```
 
-   Or just *"Continue the latest session using baton"*. In Claude Code you can also type `/baton load my_session`.
+   In Claude Code you can also type `/baton resume my_session`.
+
+> **Start in the session's folder.** If the session worked in another folder on this computer, `load`, `resume`, and `import` refuse to load it and print `cd <folder> && <agent>` to restart there: relative paths, commands, and project rules belong to that folder. Add `--force` to load it in the current folder anyway.
 
 > **Start from a clean context.** If the agent already has a conversation going, start a new one first (`/clear` in Claude Code and agy, `/new` in Codex). Otherwise the loaded session lands on top of the old one.
+
+### Forgot which agent you worked in last?
+
+`baton resume my_session` finds the latest point of the session, wherever it is:
+
+- the copy saved in baton, if nothing happened after it;
+- an agent session that went on after it, even without `baton save`. If that session belongs to the agent you are in, baton tells you how to resume it natively there (for example `/resume <id>` in Claude Code), with no loss at all. Otherwise it imports that session and loads it.
+
+A session loaded through baton keeps the name: Claude Code and Codex show it in their own `/resume` menus, and a later `baton save` without a name saves it under the same name. The session saved under that name before is kept as `my_session.2026-11-09_14-30` (`baton list --all` shows such older versions; the 3 newest are kept).
 
 ### Find a saved session
 
@@ -110,7 +121,7 @@ baton packs the session, the files changed during it (even uncommitted ones), an
 /baton load https://paste.rs/x9K2m#8f4a…
 ```
 
-Local files that differ are kept as `.baton.bak`.
+Local files that differ are kept as `.baton.bak`. baton also checks that the folder is a checkout of the same repository (git, Mercurial, Fossil, or Subversion) on the same branch and revision, and tells you how to fix it if not. `baton push` warns about commits that are not on the server yet: the bundle carries uncommitted changes, not commits.
 
 > **Codex sandbox:** if Codex blocks the network, type `!baton load "<URL>"` at the Codex prompt, then `baton load`.
 
@@ -118,9 +129,10 @@ Local files that differ are kept as `.baton.bak`.
 
 | Command | Description |
 |---|---|
-| `baton save [name]` | Save the current session under a name (default: folder name) and print a prompt for the next agent. |
-| `baton load [name\|#\|id\|URL]` | Load a saved session; without arguments, the most recently saved one. |
-| `baton list [agent] [query]` | List saved sessions, newest first. |
+| `baton resume <name\|#>` | Continue a session from its latest point in any agent (`--load` always loads it here). |
+| `baton save [name]` | Save the current session (default name: the one it was loaded or saved as, else the folder name) and print a prompt for the next agent. |
+| `baton load [name\|#\|id\|URL]` | Load a session saved in baton; without arguments, the most recently saved one. |
+| `baton list [--all] [agent] [query]` | List saved sessions, newest first; `--all` adds older versions. |
 | `baton import [#\|name\|id] [as name] [--no-load]` | List recent sessions of all agents, or save one into baton and load it. |
 | `baton push [name]` | Encrypt and upload the session with changed files; prints a link for `baton load`. |
 | `baton rm <name\|#>` | Delete a saved session. The agent's own log is not touched. |

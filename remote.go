@@ -38,6 +38,9 @@ type RemoteBundle struct {
 	Files         []FileEntry       `json:"files"`
 	ProjectRules  []FileEntry       `json:"project_rules"`
 	GlobalRules   map[string]string `json:"global_rules"`
+	// Repo is the checkout the session worked in; the receiver compares it
+	// with its own folder.
+	Repo *RepoInfo `json:"repo,omitempty"`
 }
 
 func slimSessionForRemote(ps *ParsedSession) *ParsedSession {
@@ -78,7 +81,14 @@ func slimSessionForRemote(ps *ParsedSession) *ParsedSession {
 	return &cp
 }
 
-func pushRemoteSession(name, storage, localDir string) (string, error) {
+// pushRemoteSession uploads the current session; warnings are about commits
+// the other computer will not be able to get.
+func pushRemoteSession(name, storage, localDir string) (token string, warnings []string, err error) {
+	token, err = pushRemoteSessionToken(name, storage, localDir, &warnings)
+	return token, warnings, err
+}
+
+func pushRemoteSessionToken(name, storage, localDir string, warnings *[]string) (string, error) {
 	ps, err := parseCurrentSession()
 	if err != nil {
 		return "", err
@@ -90,15 +100,16 @@ func pushRemoteSession(name, storage, localDir string) (string, error) {
 	}
 	saveName := strings.TrimSpace(name)
 	if saveName == "" {
-		saveName = strings.TrimSpace(ps.Title)
-	}
-	if saveName == "" && cwd != "" {
-		saveName = filepath.Base(cwd)
+		saveName = defaultSaveName(ps)
 	}
 	_, _, _ = saveSessionToBatonStore(ps, saveName)
+	ps.Format = snapshotFormat
+	ps.SavedBy = version
 	// The receiving machine saves the session under the bundle's title
 	ps.Title = saveName
 
+	repo := detectRepo(cwd)
+	*warnings = unpushedRepoWarnings(cwd, repo)
 	files := collectModifiedWorkspaceFiles(cwd, ps.ModifiedFiles)
 	projectRules := collectProjectRuleFiles(cwd)
 	globalRules := collectGlobalRuleFiles()
@@ -111,6 +122,7 @@ func pushRemoteSession(name, storage, localDir string) (string, error) {
 		Files:         files,
 		ProjectRules:  projectRules,
 		GlobalRules:   globalRules,
+		Repo:          repo,
 	}
 
 	encryptedB64, hexKey, err := compressAndEncryptBundle(&bundle)
@@ -280,6 +292,9 @@ func pullRemoteSession(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := checkSnapshotFormat(bundle.Session); err != nil {
+		return "", err
+	}
 	if bundle.Session != nil && len(bundle.Session.AllTurns) == 0 && len(bundle.Session.PostCompact) > 0 {
 		bundle.Session.AllTurns = bundle.Session.PostCompact
 	}
@@ -328,6 +343,13 @@ func pullRemoteSession(token string) (string, error) {
 
 	var header strings.Builder
 	header.WriteString("# REMOTE SESSION RESTORED\n\n")
+	if warns := repoMismatchWarnings(cwd, bundle.Repo); len(warns) > 0 {
+		header.WriteString("## Repository Check (tell the user before continuing):\n")
+		for _, w := range warns {
+			header.WriteString("- " + w + "\n")
+		}
+		header.WriteString("\n")
+	}
 	if len(restoredFiles) > 0 {
 		header.WriteString("## Restored Workspace Files:\n")
 		for _, f := range restoredFiles {
@@ -344,6 +366,7 @@ func pullRemoteSession(token string) (string, error) {
 	}
 
 	header.WriteString(formatHandoffSummary(bundle.Session, handoffDir, bundle.GlobalRules))
+	header.WriteString(attachCurrentSession(chainName(bundle.Session)))
 	return header.String(), nil
 }
 

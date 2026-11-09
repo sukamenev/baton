@@ -71,7 +71,32 @@ Bare `baton …` commands are skipped as well. If only commands follow the lates
 - **Size:** the active context that `baton load` would hand over, measured in baton's own normalized text. It is comparable across agents and survives transfers between agents and machines.
 - **Import cache:** `baton import` has to parse each raw log to measure it, so results are cached in `/tmp/baton-<uid>/cache/` and an unchanged log is not parsed again. Sessions without any messages (the agent was opened and closed) and `baton load` stub sessions are hidden.
 - **ID:** the first 8 characters of the agent's own session ID; the same in `baton list` and `baton import`. List numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`.
-- **Name collisions:** `baton save name` for a different session with an existing name saves it as `name-2`, `name-3`, and so on.
+- **Name collisions:** a name always holds the latest point of the work. `baton save name` (also `push`, `resume`, `import … as name`) from a different session moves the session saved under it to `name.<date>` (for example `my_session.2026-11-09_14-30`, the time it was saved) and takes the name. Older versions have no list numbers: `baton list --all` shows them, `baton load <version name>` loads one, and only the 3 newest are kept. `baton rm name` gives the name back to the newest older version. Only `baton import` without `as` (the name is the agent's own title, which unrelated sessions often share) uses suffixes: `name-2`, `name-3`, …
+
+## Snapshot format and versions
+
+A saved snapshot (`~/.config/baton/saved/<name>.baton.json`) is JSON. It records `format` (the snapshot format, now 1) and `saved_by` (the baton version that wrote it). New optional fields keep the format: older batons ignore fields they don't know. The format goes up only when an existing field changes meaning; a baton that meets a newer format asks for `baton update` instead of misreading the snapshot. Remote bundles carry the same fields.
+
+## Links between agent sessions and names (`baton resume`)
+
+`~/.config/baton/links.json` records which agent session holds a point of which name, and how many prompts the user had typed in it at that moment:
+
+- `baton save` links the saved session to its name;
+- `baton load`, `baton resume`, and `baton import` link the session they load into (the one running baton) to the loaded name.
+
+`baton resume name` compares the saved copy with every agent session linked to the name or named so in the agent. A linked session counts as a newer point if the number of typed prompts changed since it was linked and it was written after the saved copy. The newest point wins:
+
+- the saved copy: it is loaded;
+- a session of the agent running baton (or baton runs in a terminal): baton prints the agent's native resume command, because a native resume loses nothing: `claude --resume <id>` (or `/resume <id>` inside Claude Code), `codex resume <id>`, `agy --conversation <id>`, `kimi --session session_<id>`, `opencode --session ses_<id>`, `agent --resume <id>` (Cursor), `pi --session <id>`;
+- a session of another agent: it is imported under the name (the old copy becomes an older version) and loaded.
+
+`--load` always loads into the current conversation. The session running baton is found by the ID its agent exports (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`, `CURSOR_CONVERSATION_ID`), otherwise as the newest session of the calling agent in the current folder.
+
+**The session's folder.** `load`, `resume`, and `import` compare the session's folder with the folder baton runs in, after resolving symlinks. Only the same folder counts: a subfolder or a parent folder changes what relative paths, `go test ./...`, and project rule files (`CLAUDE.md`, `AGENTS.md`) refer to, and Claude Code resumes only sessions of the folder it runs in. If the session's folder exists on this machine and differs, baton refuses to load it (exit code 1), prints `cd <folder> && <agent>` and the command to rerun there, and accepts `--force` to load it here anyway. A folder that does not exist here (a session from another computer, a removed worktree) does not stop loading; neither does `baton load <URL>`, which restores files into the current folder. Native resume hints in another folder are terminal commands that start there (`cd <folder> && claude --resume <id>`).
+
+**Naming the session in the agent.** After a load, baton names the session it loaded into, so the agent's own resume menu shows the name instead of an automatic title. It writes the record the agent itself writes on rename, only where logs are append-only: a `custom-title` row in the Claude Code transcript (a name the user set with `/rename` is kept) and a `thread_name` row in Codex's `session_index.jsonl`. Other agents keep their own titles for now.
+
+**`baton save` without a name** uses the name the session is linked to, then a name the user gave it in the agent (Claude Code `/rename`, Pi, Kimi), then the folder name.
 
 ## Which session `baton save` picks
 
@@ -106,6 +131,12 @@ The ciphertext is uploaded through a fallback chain: `paste.rs` → `dpaste.org`
 - restores the modified files, keeping a `.baton.bak` copy of any local file that differs;
 - puts the source machine's global rules into `handoff/<session_id>/global_rules/`;
 - saves the session into the saved store, so later loads work offline.
+
+### Repository check
+
+`baton push` records the checkout the session worked in: the version-control system (git, Mercurial, Fossil, or Subversion), the remote URL without credentials, the branch, the revision, and the session's subfolder inside the checkout. On the receiving computer `baton load <URL>` compares them with the current folder and only warns, with the commands that fix it: not a checkout of that repository (`git clone …`, `hg clone …`, `fossil open <URL>`, `svn checkout …`), another repository, another subfolder, another branch (`git switch …`), a revision that is missing (`git fetch`, or push it on the source computer) or not checked out. Remote URLs are compared in one form, so `git@github.com:u/r.git` and `https://github.com/u/r` are the same repository.
+
+`baton push` itself warns about git commits that are not on the server (a branch without an upstream, or commits ahead of it): the bundle carries uncommitted changes, not commits. Pushing them after `baton push` is enough, since the bundle records the revision. Mercurial and Fossil would need the network to tell; the receiver's check covers them.
 
 ## Updates
 

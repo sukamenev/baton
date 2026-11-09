@@ -3,12 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-const version = "0.3.14"
+const version = "0.3.15"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -59,6 +58,20 @@ func main() {
 	}
 
 	switch cmd {
+	case "load", "pull", "apply", "import", "resume", "continue":
+		// --force: load a session that worked in another existing folder.
+		args := os.Args[:2]
+		for _, a := range os.Args[2:] {
+			if a == "--force" || a == "-f" {
+				allowOtherFolder = true
+			} else {
+				args = append(args, a)
+			}
+		}
+		os.Args = args
+	}
+
+	switch cmd {
 	case "install", "setup":
 		if err := runInstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "Install error: %v\n", err)
@@ -79,12 +92,12 @@ func main() {
 			if len(os.Args) > 3 {
 				name = os.Args[3]
 			}
-			token, err := pushRemoteSession(name, "auto", "")
+			token, warnings, err := pushRemoteSession(name, "auto", "")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Store remote error: %v\n", err)
 				os.Exit(1)
 			}
-			printRemoteTransferPrompt(token)
+			printRemoteTransferPrompt(token, warnings)
 			return
 		}
 		if msg := saveArgsError(os.Args[2:]); msg != "" {
@@ -92,13 +105,7 @@ func main() {
 			os.Exit(1)
 		}
 		alias := ""
-		if len(os.Args) < 3 {
-			cwd, _ := os.Getwd()
-			alias = filepath.Base(cwd)
-			if alias == "" || alias == "." || alias == "/" {
-				alias = "saved-session"
-			}
-		} else {
+		if len(os.Args) > 2 {
 			alias = os.Args[2]
 		}
 		msg, err := nameSession(alias)
@@ -108,8 +115,24 @@ func main() {
 		}
 		fmt.Println(msg)
 	case "list", "candidates":
-		agent, query := resolveAgentAndQuery(os.Args[2:], "")
-		fmt.Println(listSessionsReport(agent, query))
+		var listArgs []string
+		showAll := false
+		for _, a := range os.Args[2:] {
+			if a == "--all" || a == "-a" {
+				showAll = true
+			} else {
+				listArgs = append(listArgs, a)
+			}
+		}
+		agent, query := resolveAgentAndQuery(listArgs, "")
+		fmt.Println(listSessionsReport(agent, query, showAll))
+	case "resume", "continue":
+		report, err := resumeSession(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Resume error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(report)
 	case "import":
 		report, err := importSession(os.Args[2:])
 		if err != nil {
@@ -177,12 +200,12 @@ func main() {
 		if len(os.Args) > 4 {
 			localDir = os.Args[4]
 		}
-		token, err := pushRemoteSession(name, storage, localDir)
+		token, warnings, err := pushRemoteSession(name, storage, localDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Push error: %v\n", err)
 			os.Exit(1)
 		}
-		printRemoteTransferPrompt(token)
+		printRemoteTransferPrompt(token, warnings)
 	case "version", "--version", "-v":
 		fmt.Printf("baton %s\n", version)
 	case "help", "--help", "-h":
@@ -208,7 +231,13 @@ func saveArgsError(args []string) string {
 	return fmt.Sprintf("Error: baton save takes only a name and saves the current session. To save another session under a name, run:\n  baton import <#|id> as %s\n(run 'baton import' to see the list)", args[0])
 }
 
-func printRemoteTransferPrompt(token string) {
+func printRemoteTransferPrompt(token string, warnings []string) {
+	for _, w := range warnings {
+		fmt.Printf("Warning: %s\n", w)
+	}
+	if len(warnings) > 0 {
+		fmt.Println()
+	}
 	fmt.Printf(`Encrypted session token:
   %s
 
@@ -223,10 +252,16 @@ func printUsage() {
 	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, opencode, cursor, kimi)
 
 Usage:
-  baton save [name]                 Save the current session into baton's local store (defaults to folder name)
+  baton resume <name|#>             Continue a session from its latest point in any agent: resume it natively
+                                    if it went on in this agent, otherwise load it (add --load to always load)
+                                    load, import, and resume refuse a session that worked in another existing
+                                    folder; add --force to load it in the current folder anyway
+  baton save [name]                 Save the current session into baton's local store (default: the name it was
+                                    loaded or saved as, else its name in the agent, else the folder name);
+                                    the session saved under that name before is kept as <name>.<date>
   baton push [name]                 Pack (tar.gz), encrypt (AES-256-GCM), and upload the current session + uncommitted files
   baton load [name|#|id|URL|token]  Load the latest saved session in baton, a specific saved session, or a remote URL/token
-  baton list                        List saved sessions in baton's local store (#1, #2, ...)
+  baton list [--all]                List saved sessions in baton's local store (#1, #2, ...); --all adds older versions
   baton import [#|name|id] [as <name>] [--no-load]
                                     List raw sessions of all agents, or import one into baton's store and load it
   baton rm <name|#>                 Delete one saved session from baton's store (# as shown by baton list)

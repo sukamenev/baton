@@ -18,12 +18,15 @@ type importMeta struct {
 	Context int   `json:"context_size"`
 	// Stub hides the session from the list: a "baton load" stub, or a session
 	// with no messages at all (the agent was opened and closed).
-	Stub    bool `json:"stub"`
-	Version int  `json:"v,omitempty"`
+	Stub bool `json:"stub"`
+	// Prompts counts the prompts the user typed (see countTypedPrompts):
+	// `baton resume` compares it to tell whether work went on in a session.
+	Prompts int `json:"prompts"`
+	Version int `json:"v,omitempty"`
 }
 
 // importMetaVersion invalidates cached entries computed by older rules.
-const importMetaVersion = 2
+const importMetaVersion = 3
 
 // importParseWorkers bounds parallel parsing: big logs take hundreds of MB
 // of memory while parsed.
@@ -114,6 +117,7 @@ func measureCandidates(cands []SessionCandidate, cache, fresh map[string]importM
 				metas[i].Context = activeContextSize(ps.CompactSummary, ps.PostCompact)
 				empty := len(ps.AllTurns) == 0 && strings.TrimSpace(ps.CompactSummary) == ""
 				metas[i].Stub = empty || isHandoffStubSession(ps)
+				metas[i].Prompts = countTypedPrompts(ps.AllTurns)
 			}
 		}(i)
 	}

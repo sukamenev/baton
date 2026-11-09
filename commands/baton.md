@@ -3,6 +3,7 @@ Execute a session handoff operation via the baton CLI tool using arguments: $ARG
 Argument routing:
 - If no arguments are given: run "baton load" to load the most recent session in the current project.
 - If "load [target]" or a session name / agent name (claude, codex, agy, pi, opencode, cursor, kimi) / number (1, 2) / baton:... token is given: run "baton load $ARGUMENTS" and continue the interrupted task.
+- If "resume <name|#>" is given: run "baton resume $ARGUMENTS" (if the output says to continue natively, show those commands to the user and stop).
 - If "push" or "save --remote" is given: run "baton push" and show the resulting baton:... token and ready-to-paste prompt to the user.
 - If "save <name>" or "name <name>" is given: run "baton save <name>" (current session only; for another session run "baton import <#|id> as <name>").
 - If "list" is given: run "baton list".

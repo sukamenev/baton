@@ -368,7 +368,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	if err != nil || !strings.Contains(clearMsg, "1 saved session") {
 		t.Fatalf("expected clearSavedSessions to remove 1 session, err=%v, msg=%s", err, clearMsg)
 	}
-	listAfterClear := listSessionsReport("", "")
+	listAfterClear := listSessionsReport("", "", false)
 	if !strings.Contains(listAfterClear, "No saved Baton sessions found") {
 		t.Fatalf("expected empty saved session list after clear, got: %s", listAfterClear)
 	}
@@ -385,7 +385,7 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	if err != nil || !strings.Contains(importReport, "Imported [pi]") || !strings.Contains(importReport, "Fix invoice rounding") {
 		t.Fatalf("expected importSession to import and load raw session by ID, err=%v, report=%s", err, importReport)
 	}
-	if listAfterImport := listSessionsReport("", ""); !strings.Contains(listAfterImport, "billing-fix") {
+	if listAfterImport := listSessionsReport("", "", false); !strings.Contains(listAfterImport, "billing-fix") {
 		t.Fatalf("expected imported session in saved list, got: %s", listAfterImport)
 	}
 	reportImportedByName, err := loadSessionContext("", "billing-fix")
@@ -489,33 +489,6 @@ func TestImportAndSaveArgs(t *testing.T) {
 	}
 }
 
-func TestSavedSessionNameCollision(t *testing.T) {
-	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
-	t.Setenv("TMPDIR", t.TempDir())
-	first := &ParsedSession{Agent: "claude", SessionID: "claude-aaa", PostCompact: []SessionTurn{{Role: "user", Text: "First"}}}
-	second := &ParsedSession{Agent: "codex", SessionID: "codex-bbb", PostCompact: []SessionTurn{{Role: "user", Text: "Second"}}}
-
-	p1, n1, err := saveSessionToBatonStore(first, "BookTrans")
-	if err != nil || n1 != "BookTrans" {
-		t.Fatalf("first save: name=%q err=%v", n1, err)
-	}
-	// A different session under the same name must not overwrite the first one
-	p2, n2, err := saveSessionToBatonStore(second, "BookTrans")
-	if err != nil || n2 != "BookTrans-2" || p2 == p1 {
-		t.Fatalf("expected BookTrans-2 for a different session, got name=%q path=%q err=%v", n2, p2, err)
-	}
-	// Re-saving an already saved session updates its own file in place
-	if p, n, err := saveSessionToBatonStore(second, "BookTrans"); err != nil || n != "BookTrans-2" || p != p2 {
-		t.Fatalf("expected re-save to reuse BookTrans-2, got name=%q path=%q err=%v", n, p, err)
-	}
-	if p, n, err := saveSessionToBatonStore(first, "BookTrans"); err != nil || n != "BookTrans" || p != p1 {
-		t.Fatalf("expected re-save to reuse BookTrans, got name=%q path=%q err=%v", n, p, err)
-	}
-	if report, err := loadSessionContext("", "BookTrans-2"); err != nil || !strings.Contains(report, "Second") {
-		t.Fatalf("expected BookTrans-2 to load the second session, err=%v report=%s", err, report)
-	}
-}
-
 func TestRemoveSavedSession(t *testing.T) {
 	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
@@ -527,20 +500,29 @@ func TestRemoveSavedSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The second session took the name; the first one is an older version.
+	var older string
+	for v := range savedVersionNames("yudkowsky") {
+		older = v
+	}
 	// A partial or unknown name must not delete anything
 	if report, err := removeSavedSession("yudk"); err != nil || !strings.Contains(report, "No saved session matched") {
 		t.Fatalf("expected list for a non-exact name, err=%v report=%s", err, report)
 	}
-	if report, err := removeSavedSession("yudkowsky-2"); err != nil || !strings.Contains(report, "Removed saved session **yudkowsky-2**") {
-		t.Fatalf("expected removal by name, err=%v report=%s", err, report)
+	// Removing the latest gives the name back to the previous version.
+	if report, err := removeSavedSession("yudkowsky"); err != nil || !strings.Contains(report, "now holds its previous version") {
+		t.Fatalf("expected removal by name with the previous version restored, err=%v report=%s", err, report)
 	}
 	if aliases := loadAliases(); aliases["/src/b.jsonl"] != "" {
 		t.Fatalf("expected alias of the removed session to be dropped, got %v", aliases)
 	}
+	if older == "" || len(savedVersionNames("yudkowsky")) != 0 {
+		t.Fatalf("expected the version %q to be promoted", older)
+	}
 	if report, err := removeSavedSession("1"); err != nil || !strings.Contains(report, "Removed saved session **yudkowsky**") {
 		t.Fatalf("expected removal by number, err=%v report=%s", err, report)
 	}
-	if list := listSessionsReport("", ""); !strings.Contains(list, "No saved Baton sessions found") {
+	if list := listSessionsReport("", "", false); !strings.Contains(list, "No saved Baton sessions found") {
 		t.Fatalf("expected empty store, got: %s", list)
 	}
 }
