@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.15"
+const version = "0.3.16"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {

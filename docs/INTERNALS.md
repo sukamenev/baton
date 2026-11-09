@@ -106,6 +106,29 @@ A saved snapshot (`~/.config/baton/saved/<name>.baton.json`) is JSON. It records
 - **Parent processes (Linux):** if no variable is set, baton walks up the parent processes. Shells running a command string (`sh -c …`) are skipped, because their command line contains the project path, not the agent.
 - **Kimi Code:** Kimi passes no marker to the commands it runs, so it is recognized only by its process. On macOS and Windows use `baton import` instead.
 
+## Folders baton reads and writes
+
+For sandbox settings and security reviews. An environment variable in parentheses replaces the default location.
+
+| Folder | Access | Used by |
+|---|---|---|
+| `~/.claude/projects/` (`CLAUDE_CONFIG_DIR`) | read; appends a `custom-title` row to the session that loaded a saved session | all commands that list or read sessions; `load`, `resume`, `import` |
+| `~/.codex/sessions/`, `~/.codex/session_index.jsonl` (`CODEX_HOME`) | read; appends a `thread_name` row to `session_index.jsonl` | same |
+| `~/.gemini/antigravity-cli/`, `~/.gemini/antigravity/` (`brain/`, `conversations/`, `annotations/`) | read | same |
+| `~/.pi/agent/sessions/` (`PI_CODING_AGENT_DIR`) | read | same |
+| `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`), via the `sqlite3` CLI | read | same |
+| `~/.cursor/projects/`, `~/.cursor/chats/` (`CURSOR_HOME`) | read | same |
+| `~/.kimi-code/sessions/` (`KIMI_CODE_HOME`) | read | same |
+| `~/.config/baton/` (`BATON_CONFIG_DIR`): `saved/`, `imported/`, `aliases.json`, `links.json` | read and write | the store: `save`, `load`, `list`, `resume`, `import`, `rm`, `clear` |
+| `/tmp/baton-<uid>/` (`%TEMP%\baton\` on Windows): `handoff/`, `cache/` | read and write | handoff files for the next agent, the import cache, update checks |
+| the current folder | read; `load <URL>` writes restored files and `.baton.bak` backups | `push` (changed files, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.agents/rules/*.md`), `load <URL>` |
+| `~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md` | read | `push` (global rule files) |
+| `~/.baton_vault/` (`BATON_STORAGE_PATH`) | write | `push` to a local folder instead of a paste service |
+| skill folders of every agent (see below), `~/.claude/commands/`, `~/.codex/rules/` | write | `install`, `update` |
+| `~/.local/bin/baton` (or the `go install` target) | write | `update` |
+
+Network: `push` and `load <URL>` (paste services), `update` and the daily version check (GitHub, the Go module proxy and `sum.golang.org`). `push` and `load <URL>` also run `git`, `hg`, `fossil`, or `svn` in the current folder for the repository check.
+
 ## Skill installation
 
 `baton install` (and every `baton update`) writes `SKILL.md` into:

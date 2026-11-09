@@ -103,3 +103,96 @@ func TestImportHidesSessionsWithoutMessages(t *testing.T) {
 		t.Fatalf("real session hidden or unmeasured: %+v", metas[1])
 	}
 }
+
+// A message typed while Claude Code was working is logged as a queued_command
+// attachment; the wrapped copy in api-request-blob rows is not a turn.
+func TestClaudeQueuedPrompts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	lines := []string{
+		`{"type":"user","cwd":"/w","message":{"role":"user","content":"Start the task"}}`,
+		`{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"Use this computer as the reference"}}`,
+		`{"type":"attachment","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>done</task-notification>"}}`,
+		`{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"peer","from":"a1"},"prompt":"Message from another agent"}}`,
+		`{"type":"api-request-blob","message":{"role":"user","content":[{"type":"text","text":"The user sent a new message while you were working:\nUse this computer as the reference\n\nThis is how Claude Code surfaces messages the user sends mid-turn."}]}}`,
+		`{"type":"user","message":{"role":"user","content":"Use this computer as the reference"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := parseSessionFile("claude", path, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users []string
+	for _, turn := range ps.AllTurns {
+		if turn.Role == "user" {
+			users = append(users, turn.Text)
+		}
+	}
+	if strings.Join(users, "|") != "Start the task|Use this computer as the reference" {
+		t.Fatalf("unexpected user turns: %q", users)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if got := lastUserPromptInTail(f, 1<<20); got != "Use this computer as the reference" {
+		t.Fatalf("preview must be the typed text, got %q", got)
+	}
+}
+
+// A stray backtick or tilde in a prompt must not open a span that swallows
+// the following rows of the list.
+func TestPreviewMarkdownIsEscaped(t *testing.T) {
+	var sb strings.Builder
+	writeCandidateRows(&sb, []SessionCandidate{
+		{Agent: "claude", Title: "a", Path: "/x/a.jsonl", CWD: "/w", Preview: "j,`hnre ~/dir *x* _y_ [l](u) <b> c:\\d"},
+		{Agent: "claude", Title: "b", Path: "/x/b.jsonl", CWD: "/w2"},
+	})
+	got := sb.String()
+	want := "`j,'hnre ~/dir *x* _y_ [l](u) <b> c:\\d`"
+	if !strings.Contains(got, want) {
+		t.Fatalf("preview not escaped:\n%s", got)
+	}
+	if !strings.Contains(got, "`/w2`") {
+		t.Fatalf("folder lines keep their code spans:\n%s", got)
+	}
+}
+
+func TestCompactSummaryIsNotAPrompt(t *testing.T) {
+	row := map[string]interface{}{"type": "user", "isCompactSummary": true,
+		"message": map[string]interface{}{"role": "user", "content": "This session is being continued from a previous conversation"}}
+	if got := userPromptFromRow(row); got != "" {
+		t.Fatalf("the /compact summary is not a prompt, got %q", got)
+	}
+}
+
+func TestSlashCommandIsNotAPrompt(t *testing.T) {
+	cases := map[string]string{
+		"/compact":          "",
+		"/context":          "",
+		"/mnt/data is full": "/mnt/data is full",
+		"/mnt/data":         "/mnt/data",
+	}
+	for in, want := range cases {
+		if got := cleanUserPrompt(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPastedTextInPreview(t *testing.T) {
+	cases := map[string]string{
+		"Looks like an extra slash:\n\n\n\n<pasted_content id=\"253d\">\n> baton import\n  #1 ...\n</pasted_content id=\"253d\">": "Looks like an extra slash: [+ pasted text]",
+		"<pasted_content id=\"1\">\nError: build failed\n   at main.go:12\n</pasted_content id=\"1\">":                            "[pasted] Error: build failed at main.go:12",
+		"See this:\n<pasted_content id=\"2\">\nunterminated":                                                                      "See this: [+ pasted text]",
+		"Two  spaces\n\nand   lines": "Two spaces and lines",
+	}
+	for in, want := range cases {
+		if got := cleanUserPrompt(in); got != want {
+			t.Errorf("%q:\n got %q\nwant %q", in, got, want)
+		}
+	}
+}

@@ -43,6 +43,8 @@ The user may write in any language. The phrases in the table below are English e
 
 Note for Codex CLI: if a remote `baton load <URL>` or `baton push` fails due to sandbox network restrictions and permission escalation is rejected by policy, tell the user to run `!baton load "<URL>"` (or `!baton push`) directly in the Codex prompt with a leading exclamation mark `!`, and then type `baton load`.
 
+Note for Antigravity CLI (agy): run every `baton` command with `BypassSandbox: true`. The default command sandbox sees neither `~/.local/bin/baton` nor the agents' session folders in the home directory, so a sandboxed call only fails with `command not found`. If running outside the sandbox is denied, tell the user to run `!baton <arguments>` at the agy prompt themselves.
+
 In Cursor (IDE agent and `agent` CLI), use the installed Baton skill to run the same `baton` commands. The activation conditions above apply in Cursor too.
 
 `baton resume <name>` continues a session from its latest point: the copy saved in baton or an agent session that went on after it. If its output says to continue the session natively, do not load anything: show the user the commands from the output exactly as printed and stop. Run `baton resume <name> --load` only if the user asks to load it into this conversation anyway.
@@ -54,7 +56,7 @@ If a remote `baton load <URL>` prints `Repository Check` warnings (this folder i
 ## Rules After Running `baton list`, `baton load`, `baton resume`, or `baton import`
 
 1. **If `baton` returned a numbered candidate list (`#1`, `#2`, ...):**
-   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Copy the list into your reply **character for character**, from the first `**#1**` line to the last entry, keeping its Markdown (line breaks, indentation, bold, italics). This overrides your usual formatting habits. Forbidden:
+   - The user usually cannot see raw command output (CLI agents fold it), so your reply is the only place where they see the list. Copy the list into your reply **character for character**, from the first `**#1**` line to the last entry, keeping its Markdown (line breaks, indentation, bold, inline code). This overrides your usual formatting habits. Forbidden:
      - converting the list into a table or columns, or changing its layout;
      - translating anything, including agent names and `(unnamed)`;
      - inventing or "improving" session names or descriptions (an `(unnamed)` session stays `(unnamed)`);

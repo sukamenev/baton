@@ -109,6 +109,14 @@ func formatSize(n int) string {
 
 var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
+// pastedContentPattern matches a block of text pasted into Claude Code; the
+// closing tag may be missing when the prompt was cut.
+var pastedContentPattern = regexp.MustCompile(`(?s)<pasted_content[^>]*>(.*?)(?:</pasted_content[^>]*>|\z)`)
+
+// slashCommandPattern matches a prompt that is only an agent's slash command
+// ("/compact"), not a path ("/mnt/data") or a sentence.
+var slashCommandPattern = regexp.MustCompile(`^/[A-Za-z][A-Za-z0-9:_-]*$`)
+
 // cursorUserQueryPattern pulls the text the user typed out of a Cursor user turn.
 var cursorUserQueryPattern = regexp.MustCompile(`(?s)<user_query>\s*(.*?)\s*</user_query>`)
 
@@ -844,6 +852,16 @@ func displayPath(p string) string {
 	return "~" + string(filepath.Separator) + rel
 }
 
+// markdownCodeSpan shows text verbatim as inline code. A backtick would end
+// the span, so it becomes an apostrophe.
+func markdownCodeSpan(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "`", "'"))
+	if text == "" {
+		return ""
+	}
+	return "`" + text + "`"
+}
+
 // listIndent indents the folder and prompt lines under each row. Markdown strips
 // leading spaces but keeps no-break spaces, so the list stays a ladder without bullets.
 const listIndent = "\u00a0\u00a0\u00a0\u00a0"
@@ -866,9 +884,10 @@ func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
 			sb.WriteString(fmt.Sprintf("%s`%s`  \n", listIndent, displayPath(c.CWD)))
 		}
 		if c.Preview != "" {
-			// Escape asterisks so they don't break the italics; names stay as is
-			// because agents copy them into `baton load <name>`.
-			sb.WriteString(fmt.Sprintf("%s*%s*  \n", listIndent, strings.ReplaceAll(c.Preview, "*", "\\*")))
+			// The prompt goes into a code span: nothing inside it is Markdown, so
+			// a stray `~`, `*`, or `<` neither formats text nor swallows the next
+			// rows, and no backslash escapes show up in renderers that print them.
+			sb.WriteString(fmt.Sprintf("%s%s  \n", listIndent, markdownCodeSpan(c.Preview)))
 		}
 	}
 }
@@ -1671,11 +1690,45 @@ func lastUserPromptInTail(f *os.File, tailBytes int64) string {
 
 // userPromptFromRow extracts the text typed by the user from one JSONL row of any
 // supported agent, skipping tool results and injected meta/system messages.
+// claudeQueuedPrompt returns what the user typed while Claude Code was working:
+// an attachment of type queued_command in prompt mode from a human (task
+// notifications and messages from other agents are not the user's).
+func claudeQueuedPrompt(row map[string]interface{}) string {
+	att, _ := row["attachment"].(map[string]interface{})
+	if att == nil {
+		return ""
+	}
+	if t, _ := att["type"].(string); t != "queued_command" {
+		return ""
+	}
+	if mode, _ := att["commandMode"].(string); mode != "prompt" {
+		return ""
+	}
+	if origin, _ := att["origin"].(map[string]interface{}); origin != nil {
+		if kind, _ := origin["kind"].(string); kind != "human" {
+			return ""
+		}
+	}
+	p, _ := att["prompt"].(string)
+	return strings.TrimSpace(p)
+}
+
 func userPromptFromRow(row map[string]interface{}) string {
 	if isMeta, _ := row["isMeta"].(bool); isMeta {
 		return ""
 	}
+	// Claude Code's "This session is being continued…" summary after /compact.
+	if summary, _ := row["isCompactSummary"].(bool); summary {
+		return ""
+	}
 	typ, _ := row["type"].(string)
+	switch typ {
+	case "api-request-blob":
+		// Claude Code's copy of a request sent to the model, not a turn.
+		return ""
+	case "attachment":
+		return cleanUserPrompt(claudeQueuedPrompt(row))
+	}
 	if typ == "context.append_message" || typ == "context.append_loop_event" {
 		return ""
 	}
@@ -1815,6 +1868,17 @@ func cleanUserPrompt(s string) string {
 	if m := cursorUserQueryPattern.FindStringSubmatch(s); len(m) == 2 {
 		s = strings.TrimSpace(m[1])
 	}
+	// Text pasted into Claude Code is wrapped in <pasted_content>: show the
+	// user's own words and mark the paste; a prompt that is only a paste
+	// shows the paste's beginning.
+	if strings.Contains(s, "<pasted_content") {
+		own := strings.TrimSpace(pastedContentPattern.ReplaceAllString(s, " "))
+		if own != "" {
+			s = own + " [+ pasted text]"
+		} else if m := pastedContentPattern.FindStringSubmatch(s); len(m) == 2 && strings.TrimSpace(m[1]) != "" {
+			s = "[pasted] " + strings.TrimSpace(m[1])
+		}
+	}
 	// Agent-injected context: <environment_context>, <command-name>, <system-reminder>,
 	// <local-command-caveat>, AGENTS.md instructions, etc.
 	if s == "" || strings.HasPrefix(s, "<") || strings.HasPrefix(s, "# AGENTS.md instructions") ||
@@ -1822,12 +1886,17 @@ func cleanUserPrompt(s string) string {
 		(strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") && !strings.Contains(s, "\n")) {
 		return ""
 	}
+	// Neither do bare slash commands (/compact, /context, /exit).
+	if slashCommandPattern.MatchString(s) {
+		return ""
+	}
 	// Bare baton commands say nothing about what the session was about.
 	low := strings.ToLower(s)
 	if low == "baton" || strings.HasPrefix(low, "baton ") || strings.HasPrefix(low, "/baton") {
 		return ""
 	}
-	return s
+	// One line for the list: blank lines and indentation become single spaces.
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // sessionIDForPath is the session_id baton gives a raw session ("<agent>-<id>").
@@ -2169,6 +2238,7 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 		}
 	}
 
+	lastQueued := ""
 	for scanner.Scan() {
 		var row map[string]interface{}
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
@@ -2198,6 +2268,16 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 			}
 		}
 
+		// A message the user sent while the agent was working is logged only
+		// as a queued_command attachment, not as a user row.
+		if typ == "attachment" {
+			if p := claudeQueuedPrompt(row); p != "" {
+				addTurn(SessionTurn{Role: "user", Text: p})
+				lastQueued = p
+			}
+			continue
+		}
+
 		msg, _ := row["message"].(map[string]interface{})
 		if msg == nil {
 			continue
@@ -2210,6 +2290,10 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 			case string:
 				if strings.HasPrefix(strings.TrimSpace(content), "<compact_summary>") {
 					markCompact(content)
+					continue
+				}
+				if lastQueued != "" && strings.TrimSpace(content) == lastQueued {
+					lastQueued = "" // the queued message was also logged as a turn
 					continue
 				}
 				if strings.TrimSpace(content) != "" {
