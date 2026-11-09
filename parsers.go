@@ -26,6 +26,10 @@ type SessionTurn struct {
 	Text      string `json:"text"`
 	ToolName  string `json:"tool_name,omitempty"`
 	RawOutput string `json:"raw_output,omitempty"`
+	// Meta marks a user-role message the agent injected rather than the user
+	// typed (Claude Code's isMeta: /context output, skill bodies, notices). It
+	// stays in the transcript but never becomes the list's last-prompt preview.
+	Meta bool `json:"meta,omitempty"`
 }
 
 type ParsedSession struct {
@@ -41,6 +45,9 @@ type ParsedSession struct {
 	PostCompact     []SessionTurn `json:"post_compact"`
 	ModifiedFiles   []string      `json:"modified_files"`
 	Commands        []string      `json:"commands"`
+	// LastPrompt is the list preview, fixed at save time: snapshots keep only
+	// the turns after the last compaction, so the earlier prompt is lost later.
+	LastPrompt string `json:"last_prompt,omitempty"`
 }
 
 type SessionCandidate struct {
@@ -318,6 +325,7 @@ func saveSessionToBatonStore(ps *ParsedSession, name string) (string, string, er
 			cp.CWD = cwd
 		}
 	}
+	cp.LastPrompt = sessionLastPrompt(ps)
 	// Keep only post-compaction active context in the saved snapshot so loading is instant
 	cp.AllTurns = cp.PostCompact
 
@@ -424,6 +432,7 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 				CWD         string        `json:"cwd"`
 				Summary     string        `json:"compact_summary"`
 				PostCompact []SessionTurn `json:"post_compact"`
+				LastPrompt  string        `json:"last_prompt"`
 			}
 			if json.Unmarshal(data, &meta) != nil {
 				continue
@@ -442,15 +451,10 @@ func discoverSavedBatonSessions(agent, query string) []SessionCandidate {
 			if title == "" {
 				title = strings.TrimSuffix(filepath.Base(m), ".baton.json")
 			}
-			preview := ""
-			for i := len(meta.PostCompact) - 1; i >= 0; i-- {
-				if meta.PostCompact[i].Role != "user" {
-					continue
-				}
-				if txt := cleanUserPrompt(meta.PostCompact[i].Text); txt != "" {
-					preview = truncateInline(txt, 140)
-					break
-				}
+			preview := meta.LastPrompt
+			if preview == "" {
+				// Snapshots saved before baton recorded last_prompt.
+				preview = lastUserPromptInTurns(meta.PostCompact)
 			}
 			if query != "" && !candidateMatchesQuery(m, title, preview, query) {
 				continue
@@ -1588,6 +1592,35 @@ func userPromptFromRow(row map[string]interface{}) string {
 	return ""
 }
 
+// lastUserPromptInTurns returns the most recent prompt the user typed, skipping
+// agent-injected messages and bare baton commands; "" when there is none.
+func lastUserPromptInTurns(turns []SessionTurn) string {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role != "user" || turns[i].Meta {
+			continue
+		}
+		if txt := cleanUserPrompt(turns[i].Text); txt != "" {
+			return truncateInline(txt, 140)
+		}
+	}
+	return ""
+}
+
+// sessionLastPrompt is the prompt shown in the saved list: the last one after
+// the latest compaction or, if only commands followed it, the last one before.
+func sessionLastPrompt(ps *ParsedSession) string {
+	if p := lastUserPromptInTurns(ps.PostCompact); p != "" {
+		return p
+	}
+	if n := ps.PreCompactTurns; n > 0 && n <= len(ps.AllTurns) {
+		if p := lastUserPromptInTurns(ps.AllTurns[:n]); p != "" {
+			return p
+		}
+	}
+	// A re-saved snapshot no longer has the earlier turns; keep its preview.
+	return ps.LastPrompt
+}
+
 func cleanUserPrompt(s string) string {
 	s = strings.TrimSpace(s)
 	// Cursor wraps the typed prompt in <user_query> after a <timestamp> block.
@@ -1970,6 +2003,7 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 
 		switch typ {
 		case "user":
+			isMeta, _ := row["isMeta"].(bool)
 			switch content := msg["content"].(type) {
 			case string:
 				if strings.HasPrefix(strings.TrimSpace(content), "<compact_summary>") {
@@ -1977,7 +2011,7 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 					continue
 				}
 				if strings.TrimSpace(content) != "" {
-					addTurn(SessionTurn{Role: "user", Text: content})
+					addTurn(SessionTurn{Role: "user", Text: content, Meta: isMeta})
 				}
 			case []interface{}:
 				for _, item := range content {
@@ -1987,7 +2021,7 @@ func parseClaudeJSONL(path string, ps *ParsedSession) error {
 					case "text":
 						txt, _ := block["text"].(string)
 						if strings.TrimSpace(txt) != "" {
-							addTurn(SessionTurn{Role: "user", Text: txt})
+							addTurn(SessionTurn{Role: "user", Text: txt, Meta: isMeta})
 						}
 					case "tool_result":
 						raw := extractContentText(block["content"])

@@ -16,8 +16,14 @@ type importMeta struct {
 	ModTime int64 `json:"mtime"`
 	Bytes   int64 `json:"bytes"`
 	Context int   `json:"context_size"`
-	Stub    bool  `json:"stub"`
+	// Stub hides the session from the list: a "baton load" stub, or a session
+	// with no messages at all (the agent was opened and closed).
+	Stub    bool `json:"stub"`
+	Version int  `json:"v,omitempty"`
 }
+
+// importMetaVersion invalidates cached entries computed by older rules.
+const importMetaVersion = 2
 
 // importParseWorkers bounds parallel parsing: big logs take hundreds of MB
 // of memory while parsed.
@@ -88,10 +94,10 @@ func measureCandidates(cands []SessionCandidate, cache, fresh map[string]importM
 	var todo []int
 	for i, c := range cands {
 		mt, sz := candidateFingerprint(c)
-		if m, ok := cache[c.Path]; ok && m.ModTime == mt && m.Bytes == sz {
+		if m, ok := cache[c.Path]; ok && m.ModTime == mt && m.Bytes == sz && m.Version == importMetaVersion {
 			metas[i] = m
 		} else {
-			metas[i] = importMeta{ModTime: mt, Bytes: sz}
+			metas[i] = importMeta{ModTime: mt, Bytes: sz, Version: importMetaVersion}
 			todo = append(todo, i)
 		}
 	}
@@ -106,7 +112,8 @@ func measureCandidates(cands []SessionCandidate, cache, fresh map[string]importM
 			c := cands[i]
 			if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil {
 				metas[i].Context = activeContextSize(ps.CompactSummary, ps.PostCompact)
-				metas[i].Stub = isHandoffStubSession(ps)
+				empty := len(ps.AllTurns) == 0 && strings.TrimSpace(ps.CompactSummary) == ""
+				metas[i].Stub = empty || isHandoffStubSession(ps)
 			}
 		}(i)
 	}
