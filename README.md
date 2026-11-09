@@ -43,14 +43,6 @@ Ask your current agent to install baton (it builds baton from source; Go is requ
 Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode, cursor, kimi). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
 ```
 
-<details>
-<summary><b>Russian Prompt (Промпт на русском языке)</b></summary>
-
-```text
-Прочитай https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md и установи инструмент baton из исходного кода для всех найденных у меня консольных агентов (claude, codex, agy, pi, opencode, cursor, kimi). Проверь наличие компилятора Go, собери бинарник в ~/.local/bin/baton, выполни baton install для установки навыка SKILL.md и слэш-команды /baton, а затем проверь работоспособность вызовом baton status.
-```
-</details>
-
 Or install manually (Go 1.22+):
 
 ```bash
