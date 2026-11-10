@@ -81,14 +81,33 @@ func slimSessionForRemote(ps *ParsedSession) *ParsedSession {
 	return &cp
 }
 
-// pushRemoteSession uploads the current session; warnings are about commits
-// the other computer will not be able to get.
-func pushRemoteSession(name, storage, localDir string) (token string, warnings []string, err error) {
-	token, err = pushRemoteSessionToken(name, storage, localDir, &warnings)
-	return token, warnings, err
+// pushReport tells what `baton push` sent, so the user sees at once whether it
+// is the session they meant.
+type pushReport struct {
+	Token string
+	// Warnings are about commits the other computer will not be able to get.
+	Warnings []string
+	// Source names the session that was sent.
+	Source string
+	// Context is the size of the conversation sent; FullContext is its size
+	// before oversized parts were cut to fit the paste services.
+	Context, FullContext int
+	// Files and FilesSize are the workspace files sent with it; Rules counts
+	// the project and global rule files.
+	Files, FilesSize, Rules int
+	// Archive is the size of the encrypted upload.
+	Archive int
 }
 
-func pushRemoteSessionToken(name, storage, localDir string, warnings *[]string) (string, error) {
+// pushRemoteSession uploads the current session.
+func pushRemoteSession(name, storage, localDir string) (pushReport, error) {
+	var r pushReport
+	token, err := pushRemoteSessionToken(name, storage, localDir, &r)
+	r.Token = token
+	return r, err
+}
+
+func pushRemoteSessionToken(name, storage, localDir string, r *pushReport) (string, error) {
 	ps, err := parseCurrentSession()
 	if err != nil {
 		return "", err
@@ -109,7 +128,7 @@ func pushRemoteSessionToken(name, storage, localDir string, warnings *[]string) 
 	ps.Title = saveName
 
 	repo := detectRepo(cwd)
-	*warnings = unpushedRepoWarnings(cwd, repo)
+	r.Warnings = unpushedRepoWarnings(cwd, repo)
 	files := collectModifiedWorkspaceFiles(cwd, ps.ModifiedFiles)
 	projectRules := collectProjectRuleFiles(cwd)
 	globalRules := collectGlobalRuleFiles()
@@ -129,6 +148,17 @@ func pushRemoteSessionToken(name, storage, localDir string, warnings *[]string) 
 	if err != nil {
 		return "", err
 	}
+	r.Source = sessionSourceLine(ps, "")
+	r.FullContext = activeContextSize(ps.CompactSummary, ps.PostCompact)
+	if bundle.Session != nil {
+		r.Context = activeContextSize(bundle.Session.CompactSummary, bundle.Session.PostCompact)
+	}
+	r.Files = len(files)
+	for _, f := range files {
+		r.FilesSize += len(f.Content)
+	}
+	r.Rules = len(projectRules) + len(globalRules)
+	r.Archive = len(encryptedB64)
 
 	storage = strings.ToLower(strings.TrimSpace(storage))
 	if storage == "" {

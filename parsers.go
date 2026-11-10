@@ -120,6 +120,10 @@ var slashCommandPattern = regexp.MustCompile(`^/[A-Za-z][A-Za-z0-9:_-]*$`)
 // cursorUserQueryPattern pulls the text the user typed out of a Cursor user turn.
 var cursorUserQueryPattern = regexp.MustCompile(`(?s)<user_query>\s*(.*?)\s*</user_query>`)
 
+// agyUserRequestPattern finds the typed prompt in an agy USER_INPUT step, which
+// wraps it in <USER_REQUEST> next to <ADDITIONAL_METADATA> and setting notes.
+var agyUserRequestPattern = regexp.MustCompile(`(?s)<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>`)
+
 // cursorTurnHeading marks one verbatim turn inside a Cursor compaction segment.
 var cursorTurnHeading = regexp.MustCompile(`(?m)^### Turn (\d+) \((System|Human|Assistant|Function|Tool)\)[ \t]*\r?\n`)
 
@@ -706,48 +710,40 @@ func isHandoffStubSession(ps *ParsedSession) bool {
 	return userTurns > 0 && firstIsBaton
 }
 
-func selectCurrentSessionCandidate(agent string, candidates []SessionCandidate) SessionCandidate {
+// selectCurrentSessionCandidate picks the agent session that is running baton
+// (`baton save` and `baton push` work only with it). The session ID the agent
+// exports decides. Without one, the calling agent's newest session (in this
+// folder if it has one there) is the one being written right now, even when it
+// began with a baton command: skipping such "stubs" sent an older, unrelated
+// session instead. Stubs are skipped only when the calling agent is unknown.
+func selectCurrentSessionCandidate(candidates []SessionCandidate) (SessionCandidate, error) {
+	if c, ok := currentSessionCandidate(candidates); ok {
+		return c, nil
+	}
+	for _, env := range sessionIDEnvs {
+		if id := strings.TrimSpace(os.Getenv(env)); id != "" {
+			return SessionCandidate{}, fmt.Errorf("the session running baton (%s=%s) was not found among the agents' session files, and baton will not take another session in its place", env, id)
+		}
+	}
+	if caller := detectCallerAgent(); caller != "" {
+		// The calling agent keeps its session elsewhere (no folder recorded or
+		// another one): its newest session is the one being written now.
+		for _, c := range candidates {
+			if c.Agent == caller {
+				return c, nil
+			}
+		}
+	}
 	cwd, _ := os.Getwd()
-	if codexThread := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID")); codexThread != "" {
-		for _, c := range candidates {
-			if strings.Contains(filepath.Base(c.Path), codexThread) {
-				return c
-			}
-		}
-	}
-	if cursorID := strings.TrimSpace(os.Getenv("CURSOR_CONVERSATION_ID")); cursorID != "" {
-		for _, c := range candidates {
-			if c.Agent == "cursor" && strings.Contains(strings.ToLower(c.Path), strings.ToLower(cursorID)) {
-				return c
-			}
-		}
-	}
-	caller := detectCallerAgent()
-	if (agent == "" || agent == "all" || agent == "auto") && caller != "" {
-		// First pass: non-stub session of caller agent in current working directory
-		for _, c := range candidates {
-			if c.Agent == caller && cwdMatches(c.CWD, cwd) {
-				if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil && !isHandoffStubSession(ps) {
-					return c
-				}
-			}
-		}
-		// Second pass: any session of caller agent in current working directory
-		for _, c := range candidates {
-			if c.Agent == caller && cwdMatches(c.CWD, cwd) {
-				return c
-			}
-		}
-	}
-	// Third pass: non-stub session of any agent in current working directory
+	// Caller unknown: non-stub session of any agent in current working directory
 	for _, c := range candidates {
 		if cwdMatches(c.CWD, cwd) {
 			if ps, err := parseSessionFile(c.Agent, c.Path, c.ModTime); err == nil && !isHandoffStubSession(ps) {
-				return c
+				return c, nil
 			}
 		}
 	}
-	return candidates[0]
+	return candidates[0], nil
 }
 
 // parseCandidate parses a raw session and fills the title and workdir known from the listing.
@@ -772,7 +768,11 @@ func parseCurrentSession() (*ParsedSession, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no local agent sessions found")
 	}
-	return parseCandidate(selectCurrentSessionCandidate("all", candidates))
+	c, err := selectCurrentSessionCandidate(candidates)
+	if err != nil {
+		return nil, err
+	}
+	return parseCandidate(c)
 }
 
 // nameSession implements `baton save [name]`. Without a name it reuses the name
@@ -788,7 +788,7 @@ func nameSession(name string) (string, error) {
 		name = defaultSaveName(ps)
 	}
 	before := savedVersionNames(name)
-	savePath, savedName, err := saveSessionToBatonStore(ps, name)
+	_, savedName, err := saveSessionToBatonStore(ps, name)
 	if err != nil {
 		return "", err
 	}
@@ -796,8 +796,20 @@ func nameSession(name string) (string, error) {
 	if older := newVersionName(name, before); older != "" {
 		note = fmt.Sprintf("\n\nThe previous **%s** (another session) is kept as **%s**.", savedName, older)
 	}
-	return fmt.Sprintf("Saved session name: **%s** ([%s] `%s` -> `%s`)%s\n\nTo continue in another agent, paste this prompt:\n  `Resume session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton resume %s`",
-		savedName, ps.Agent, filepath.Base(ps.SourceFile), filepath.Base(savePath), note, savedName, savedName), nil
+	return fmt.Sprintf("Saved session name: **%s**  \nFrom: %s%s\n\nTo continue in another agent, paste this prompt:\n  `Resume session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton resume %s`",
+		savedName, sessionSourceLine(ps, " · "+formatSize(activeContextSize(ps.CompactSummary, ps.PostCompact))+" of context"), note, savedName, savedName), nil
+}
+
+// sessionSourceLine says which agent session baton took, so a wrong pick shows
+// at once: agent, session ID, last activity, extra (appended to that line), and
+// the last prompt (baton commands do not count).
+func sessionSourceLine(ps *ParsedSession, extra string) string {
+	line := fmt.Sprintf("[%s] session %s · last active %s%s",
+		ps.Agent, shortSessionID(agentSessionID(ps.SourceFile)), ps.ModTime.Format("2006-01-02 15:04"), extra)
+	if p := sessionLastPrompt(ps); p != "" {
+		line += "  \nLast prompt: " + markdownCodeSpan(p)
+	}
+	return line
 }
 
 func parseCandidateIndex(q string, total int) (int, bool) {
@@ -896,12 +908,16 @@ func writeCandidateRows(sb *strings.Builder, candidates []SessionCandidate) {
 
 const importListLimit = 15
 
+// sessionIDEnvs are the variables in which agents export the ID of the
+// session that runs a shell command.
+var sessionIDEnvs = []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "CURSOR_CONVERSATION_ID"}
+
 // isCallerOwnSession reports whether a raw session file belongs to the agent
 // session that is running baton right now (it is a fresh handoff receiver,
 // not something to import).
 func isCallerOwnSession(path string) bool {
 	base := filepath.Base(path)
-	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "CURSOR_CONVERSATION_ID"} {
+	for _, env := range sessionIDEnvs {
 		if id := strings.TrimSpace(os.Getenv(env)); id != "" && strings.Contains(base, id) {
 			return true
 		}
@@ -1204,27 +1220,78 @@ func findAndParseSession(agent, query string) (*ParsedSession, error) {
 	return nil, fmt.Errorf("no saved Baton session matching '%s'", query)
 }
 
-func loadAgyWorkspaces(agyRoot string) map[string]string {
-	wsMap := make(map[string]string)
-	histPath := filepath.Join(agyRoot, "history.jsonl")
-	f, err := os.Open(histPath)
+// loadAgyHistory reads agy's prompt history: the workspace of each conversation
+// and the name the user gave it with `/rename <name>` (the last one wins).
+// agy also keeps titles in conversation_summaries.db, but there the user's
+// names are mixed with titles agy makes up itself.
+func loadAgyHistory(agyRoot string) (workspaces, names map[string]string) {
+	workspaces = make(map[string]string)
+	names = make(map[string]string)
+	f, err := os.Open(filepath.Join(agyRoot, "history.jsonl"))
 	if err != nil {
-		return wsMap
+		return workspaces, names
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for scanner.Scan() {
-		var row map[string]interface{}
-		if json.Unmarshal(scanner.Bytes(), &row) == nil {
-			cid, _ := row["conversationId"].(string)
-			ws, _ := row["workspace"].(string)
-			if cid != "" && ws != "" {
-				wsMap[cid] = ws
+		var row struct {
+			ConversationID string `json:"conversationId"`
+			Workspace      string `json:"workspace"`
+			Display        string `json:"display"`
+			Type           string `json:"type"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &row) != nil || row.ConversationID == "" {
+			continue
+		}
+		cid := strings.ToLower(row.ConversationID)
+		if row.Workspace != "" {
+			workspaces[cid] = row.Workspace
+		}
+		if row.Type == "slash_command" {
+			if cmd, arg, _ := strings.Cut(strings.TrimSpace(row.Display), " "); cmd == "/rename" {
+				if arg = strings.TrimSpace(arg); arg != "" {
+					names[cid] = arg
+				}
 			}
 		}
 	}
-	return wsMap
+	return workspaces, names
+}
+
+// agyTitlePattern reads the title from agy's annotations/<id>.pbtxt
+// (protobuf text format).
+var agyTitlePattern = regexp.MustCompile(`(?m)^\s*title:\s*("(?:[^"\\]|\\.)*")`)
+
+// agyTitle is the title agy's own /resume menu shows for a conversation: the
+// name the user gave it with /rename, or one agy made up. It is kept in
+// annotations/<id>.pbtxt; the user's last /rename stands in if that is missing.
+// An over-long title is an error text agy put there, not a name.
+func agyTitle(agyRoot, cid string, renamed map[string]string) string {
+	if data, err := os.ReadFile(filepath.Join(agyRoot, "annotations", cid+".pbtxt")); err == nil {
+		if m := agyTitlePattern.FindSubmatch(data); m != nil {
+			title, err := strconv.Unquote(string(m[1]))
+			if err != nil {
+				title = strings.Trim(string(m[1]), `"`)
+			}
+			if title = strings.TrimSpace(title); title != "" && utf8.RuneCountInString(title) <= 100 {
+				return title
+			}
+		}
+	}
+	return renamed[cid]
+}
+
+// agyUserName is the name the user gave an agy conversation with /rename.
+func agyUserName(path string) string {
+	p := filepath.ToSlash(path)
+	for _, mark := range []string{"/brain/", "/conversations/"} {
+		if i := strings.LastIndex(p, mark); i >= 0 {
+			_, names := loadAgyHistory(filepath.FromSlash(p[:i]))
+			return names[agentSessionID(path)]
+		}
+	}
+	return ""
 }
 
 func loadCodexThreadNames(codexRoot string) map[string]string {
@@ -1347,26 +1414,26 @@ func discoverSessions(agent, query string) []SessionCandidate {
 
 	if agent == "all" || agent == "agy" {
 		for _, agyRoot := range agyBaseDirs(home) {
-			agyWS := loadAgyWorkspaces(agyRoot)
+			agyWS, agyNames := loadAgyHistory(agyRoot)
 			brainLogs, _ := filepath.Glob(filepath.Join(agyRoot, "brain", "*", ".system_generated", "logs", "transcript_full.jsonl"))
 			if len(brainLogs) == 0 {
 				brainLogs, _ = filepath.Glob(filepath.Join(agyRoot, "brain", "*", ".system_generated", "logs", "transcript.jsonl"))
 			}
 			for _, m := range brainLogs {
-				ws := ""
+				cid := ""
 				parts := strings.Split(filepath.ToSlash(m), "/")
 				for idx, p := range parts {
 					if p == "brain" && idx+1 < len(parts) {
-						ws = agyWS[parts[idx+1]]
+						cid = strings.ToLower(parts[idx+1])
 						break
 					}
 				}
-				addFile("agy", m, "", ws)
+				addFile("agy", m, agyTitle(agyRoot, cid, agyNames), agyWS[cid])
 			}
 			pbFiles, _ := filepath.Glob(filepath.Join(agyRoot, "conversations", "*.pb"))
 			for _, m := range pbFiles {
-				cid := strings.TrimSuffix(filepath.Base(m), ".pb")
-				addFile("agy", m, "", agyWS[cid])
+				cid := strings.ToLower(strings.TrimSuffix(filepath.Base(m), ".pb"))
+				addFile("agy", m, agyTitle(agyRoot, cid, agyNames), agyWS[cid])
 			}
 		}
 	}
@@ -1866,6 +1933,9 @@ func cleanUserPrompt(s string) string {
 	s = strings.TrimSpace(s)
 	// Cursor wraps the typed prompt in <user_query> after a <timestamp> block.
 	if m := cursorUserQueryPattern.FindStringSubmatch(s); len(m) == 2 {
+		s = strings.TrimSpace(m[1])
+	}
+	if m := agyUserRequestPattern.FindStringSubmatch(s); len(m) == 2 {
 		s = strings.TrimSpace(m[1])
 	}
 	// Text pasted into Claude Code is wrapped in <pasted_content>: show the

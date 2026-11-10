@@ -318,7 +318,10 @@ func TestCrossPlatformSlugsAndCandidateFallback(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "xdg-data"))
 	t.Setenv("CURSOR_HOME", filepath.Join(tmp, "cursor-home"))
 	t.Setenv("CURSOR_AGENT", "")
-	t.Setenv("CURSOR_CONVERSATION_ID", "")
+	for _, env := range sessionIDEnvs {
+		// The test may itself run inside an agent session.
+		t.Setenv(env, "")
+	}
 	// clearSavedSessions removes the handoff dir under os.TempDir() — keep it away from the real /tmp
 	t.Setenv("TMPDIR", filepath.Join(tmp, "tmp"))
 	sessDir := filepath.Join(tmp, "sessions", "--tmp--")
@@ -616,10 +619,10 @@ func TestCursorSessionParseAndCaller(t *testing.T) {
 	if !isCallerOwnSession(jsonl) {
 		t.Fatal("expected the live Cursor conversation to be excluded from import")
 	}
-	picked := selectCurrentSessionCandidate("all", []SessionCandidate{{
+	picked, err := selectCurrentSessionCandidate([]SessionCandidate{{
 		Agent: "cursor", Path: jsonl, Title: ps.Title, CWD: ps.CWD,
 	}})
-	if picked.Path != jsonl {
+	if err != nil || picked.Path != jsonl {
 		t.Fatalf("current session pick: %s", picked.Path)
 	}
 	if ag, q := resolveAgentAndQuery([]string{"cursor"}, "latest"); ag != "cursor" || q != "latest" {

@@ -26,7 +26,7 @@ type importMeta struct {
 }
 
 // importMetaVersion invalidates cached entries computed by older rules.
-const importMetaVersion = 4
+const importMetaVersion = 5
 
 // importParseWorkers bounds parallel parsing: big logs take hundreds of MB
 // of memory while parsed.

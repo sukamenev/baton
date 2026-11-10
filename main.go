@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.16"
+const version = "0.3.17"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -92,12 +92,12 @@ func main() {
 			if len(os.Args) > 3 {
 				name = os.Args[3]
 			}
-			token, warnings, err := pushRemoteSession(name, "auto", "")
+			report, err := pushRemoteSession(name, "auto", "")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Store remote error: %v\n", err)
 				os.Exit(1)
 			}
-			printRemoteTransferPrompt(token, warnings)
+			printRemoteTransferPrompt(report)
 			return
 		}
 		if msg := saveArgsError(os.Args[2:]); msg != "" {
@@ -200,12 +200,12 @@ func main() {
 		if len(os.Args) > 4 {
 			localDir = os.Args[4]
 		}
-		token, warnings, err := pushRemoteSession(name, storage, localDir)
+		report, err := pushRemoteSession(name, storage, localDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Push error: %v\n", err)
 			os.Exit(1)
 		}
-		printRemoteTransferPrompt(token, warnings)
+		printRemoteTransferPrompt(report)
 	case "version", "--version", "-v":
 		fmt.Printf("baton %s\n", version)
 	case "help", "--help", "-h":
@@ -231,11 +231,13 @@ func saveArgsError(args []string) string {
 	return fmt.Sprintf("Error: baton save takes only a name and saves the current session. To save another session under a name, run:\n  baton import <#|id> as %s\n(run 'baton import' to see the list)", args[0])
 }
 
-func printRemoteTransferPrompt(token string, warnings []string) {
-	for _, w := range warnings {
+func printRemoteTransferPrompt(r pushReport) {
+	token := r.Token
+	fmt.Print(pushSummary(r))
+	for _, w := range r.Warnings {
 		fmt.Printf("Warning: %s\n", w)
 	}
-	if len(warnings) > 0 {
+	if len(r.Warnings) > 0 {
 		fmt.Println()
 	}
 	fmt.Printf(`Encrypted session token:
@@ -246,6 +248,30 @@ To continue in another agent or on a machine where baton is not installed yet, p
 or if baton is already installed, run:
   /baton load %s
 `, token, token, token)
+}
+
+// pushSummary says what was sent: the session, its size, and the files with it.
+func pushSummary(r pushReport) string {
+	if r.Source == "" {
+		return ""
+	}
+	context := formatSize(r.Context) + " of context"
+	if r.FullContext > r.Context {
+		context += fmt.Sprintf(" (cut from %s to fit the paste services)", formatSize(r.FullContext))
+	}
+	files := "no workspace files"
+	switch {
+	case r.Files == 1:
+		files = fmt.Sprintf("1 workspace file (%s)", formatSize(r.FilesSize))
+	case r.Files > 1:
+		files = fmt.Sprintf("%d workspace files (%s)", r.Files, formatSize(r.FilesSize))
+	}
+	rules := fmt.Sprintf("%d rule files", r.Rules)
+	if r.Rules == 1 {
+		rules = "1 rule file"
+	}
+	return fmt.Sprintf("Sent: %s  \nSize: %s, %s, %s; encrypted archive %s\n\n",
+		r.Source, context, files, rules, formatSize(r.Archive))
 }
 
 func printUsage() {

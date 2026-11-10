@@ -222,7 +222,7 @@ func measureSessions(cands []SessionCandidate) []importMeta {
 // agent in the current folder (it is being written right now).
 func currentSessionCandidate(cands []SessionCandidate) (SessionCandidate, bool) {
 	exported := false
-	for _, env := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "CURSOR_CONVERSATION_ID"} {
+	for _, env := range sessionIDEnvs {
 		id := strings.ToLower(strings.TrimSpace(os.Getenv(env)))
 		if id == "" {
 			continue
@@ -319,6 +319,8 @@ func userSessionName(agent, path string) string {
 		return lastJSONLField(path, "session_info", "name")
 	case "kimi":
 		return readKimiSessionState(kimiSessionDir(path)).name()
+	case "agy":
+		return agyUserName(path)
 	}
 	return ""
 }
