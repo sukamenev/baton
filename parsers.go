@@ -55,6 +55,10 @@ type ParsedSession struct {
 	// VersionOf marks an older version of a saved session: a newer session took
 	// its name and this snapshot was renamed to <name>.<date>.
 	VersionOf string `json:"version_of,omitempty"`
+	// SummaryEncrypted: the latest compaction's summary could not be read
+	// (Codex compacting on OpenAI's servers); CompactSummary is made of what
+	// was readable. A recap from the agent replaces it (`--summary`).
+	SummaryEncrypted bool `json:"summary_encrypted,omitempty"`
 }
 
 type SessionCandidate struct {
@@ -163,16 +167,22 @@ func findCandidateByID(candidates []SessionCandidate, q string) (SessionCandidat
 	if len(q) < 4 {
 		return SessionCandidate{}, false
 	}
+	found := candidatesByIDPrefix(candidates, q)
+	if len(found) != 1 {
+		return SessionCandidate{}, false
+	}
+	return found[0], true
+}
+
+// candidatesByIDPrefix returns every candidate whose session ID starts with q.
+func candidatesByIDPrefix(candidates []SessionCandidate, q string) []SessionCandidate {
 	var found []SessionCandidate
 	for _, c := range candidates {
 		if strings.HasPrefix(strings.ToLower(c.SessionID()), q) {
 			found = append(found, c)
 		}
 	}
-	if len(found) != 1 {
-		return SessionCandidate{}, false
-	}
-	return found[0], true
+	return found
 }
 
 // --- Cross-Platform Agent Base Directories (Linux, macOS, Windows) ---
@@ -787,6 +797,10 @@ func nameSession(name string) (string, error) {
 	if name == "" {
 		name = defaultSaveName(ps)
 	}
+	recapNote, err := applyRecap(ps, "baton save "+name, false)
+	if err != nil {
+		return "", err
+	}
 	before := savedVersionNames(name)
 	_, savedName, err := saveSessionToBatonStore(ps, name)
 	if err != nil {
@@ -797,7 +811,7 @@ func nameSession(name string) (string, error) {
 		note = fmt.Sprintf("\n\nThe previous **%s** (another session) is kept as **%s**.", savedName, older)
 	}
 	return fmt.Sprintf("Saved session name: **%s**  \nFrom: %s%s\n\nTo continue in another agent, paste this prompt:\n  `Resume session %s using baton (if baton is not installed, install it from https://github.com/sukamenev/baton following INSTALL.md)`\nor run:\n  `/baton resume %s`",
-		savedName, sessionSourceLine(ps, " · "+formatSize(activeContextSize(ps.CompactSummary, ps.PostCompact))+" of context"), note, savedName, savedName), nil
+		savedName, sessionSourceLine(ps, " · "+formatSize(activeContextSize(ps.CompactSummary, ps.PostCompact))+" of context"), note, savedName, savedName) + recapNote, nil
 }
 
 // sessionSourceLine says which agent session baton took, so a wrong pick shows
@@ -2684,14 +2698,14 @@ func parseAgyTranscriptJSONL(path string, ps *ParsedSession) error {
 // usual case) leaves `message` empty and keeps the summary only as an encrypted
 // `compaction` item in `replacement_history`, which no one but OpenAI's model can
 // read. Then the summary is made of what Codex kept readable: the user's
-// messages in `replacement_history`, plus the last assistant reply before the
+// messages in `replacement_history`, plus the conversation just before the
 // compaction (from before, the window that ends here).
 func codexCompactionSummary(payload map[string]interface{}, before []SessionTurn) string {
 	if msg := strings.TrimSpace(extractContentText(payload["message"])); msg != "" {
 		return msg
 	}
 	var sb strings.Builder
-	sb.WriteString("[Codex compacted the conversation on OpenAI's servers: its summary is encrypted and cannot be read. Below are the user's messages Codex kept and the last assistant reply before the compaction.]\n")
+	sb.WriteString("[Codex compacted the conversation on OpenAI's servers: its summary is encrypted and cannot be read. Below are the user's messages Codex kept and the conversation just before the compaction.]\n")
 	n := 0
 	items, _ := payload["replacement_history"].([]interface{})
 	for _, it := range items {
@@ -2709,13 +2723,117 @@ func codexCompactionSummary(payload map[string]interface{}, before []SessionTurn
 		n++
 		sb.WriteString(fmt.Sprintf("\n%d. %s\n", n, text))
 	}
+	sb.WriteString(compactionTail(before, codexTailBudget))
+	return sb.String()
+}
+
+// codexTailBudget bounds the conversation before an unreadable compaction that
+// stands in for its summary: about 12k tokens.
+const codexTailBudget = 50 << 10
+
+// compactionTail renders the last turns before a compaction, newest first
+// until budget bytes are used, then prints them in order. The user's and the
+// assistant's words go in full; a tool call takes one line, a tool output its
+// first line (the full output is one `baton hist` away). The last assistant
+// reply is always kept, shortened if it alone exceeds the budget.
+func compactionTail(before []SessionTurn, budget int) string {
+	var parts []string
+	used := 0
+	keptReply := false
+	first := 0
 	for i := len(before) - 1; i >= 0; i-- {
-		if before[i].Role == "assistant" && strings.TrimSpace(before[i].Text) != "" {
-			sb.WriteString(fmt.Sprintf("\n## Last assistant reply before the compaction (turn #%d)\n\n%s\n", before[i].TurnID, strings.TrimSpace(before[i].Text)))
+		t := before[i]
+		var part string
+		switch t.Role {
+		case "user", "assistant":
+			text := strings.TrimSpace(t.Text)
+			if text == "" || (t.Role == "user" && cleanUserPrompt(text) == "") {
+				continue
+			}
+			if t.Role == "assistant" && !keptReply && len(text) > budget-used {
+				text = shortenMiddle(text, budget-used-200, t.TurnID)
+			}
+			part = fmt.Sprintf("\n### [Turn #%d] %s\n%s\n", t.TurnID, t.Role, text)
+		case "tool_use":
+			part = fmt.Sprintf("- [Turn #%d] %s\n", t.TurnID, truncateInline(t.Text, 200))
+		case "tool_result":
+			out := t.RawOutput
+			if out == "" {
+				out = t.Text
+			}
+			line := firstOutputLine(out)
+			part = fmt.Sprintf("- [Turn #%d] output: %s\n", t.TurnID, truncateInline(line, 160))
+		default:
+			continue
+		}
+		if used+len(part) > budget && keptReply {
 			break
 		}
+		if t.Role == "assistant" {
+			keptReply = true
+		}
+		parts = append(parts, part)
+		used += len(part)
+		first = t.TurnID
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n## The conversation before the compaction (from turn #%d; tool output shortened, full turns via `baton hist`)\n", first))
+	for i := len(parts) - 1; i >= 0; i-- {
+		sb.WriteString(parts[i])
 	}
 	return sb.String()
+}
+
+// outputBoilerplate matches the lines agents wrap tool output in: Codex's
+// "Script completed" / "Wall time" / "Output:" header and similar.
+var outputBoilerplate = regexp.MustCompile(`^(Script (completed|running|failed|timed out).*|Wall time .*|Output:|Exit code: 0|Process exited with code 0|Chunk ID: .*|Original token count: .*|Total output lines: .*|-{3,}|\.\.\. \[collapsed .*)$`)
+
+// firstOutputLine is the first line of a tool output that says something,
+// marked with " …" if more follows.
+func firstOutputLine(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" || outputBoilerplate.MatchString(l) {
+			continue
+		}
+		// Codex's exec_command answers with JSON whose "output" holds the text.
+		if strings.HasPrefix(l, "{") {
+			var wrapped struct {
+				Output *string `json:"output"`
+			}
+			if json.Unmarshal([]byte(l), &wrapped) == nil && wrapped.Output != nil {
+				return firstOutputLine(*wrapped.Output)
+			}
+		}
+		if i < len(lines)-1 {
+			l += " …"
+		}
+		return l
+	}
+	return "(no output)"
+}
+
+// shortenMiddle keeps the beginning and the end of text within max bytes.
+func shortenMiddle(text string, max, turnID int) string {
+	if max < 400 {
+		max = 400
+	}
+	if len(text) <= max {
+		return text
+	}
+	head, tail := max*2/3, max/3
+	for head > 0 && !utf8.RuneStart(text[head]) {
+		head--
+	}
+	start := len(text) - tail
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[:head] + fmt.Sprintf("\n... [shortened %d bytes; the whole turn: baton hist <session_id> %d] ...\n", start-head, turnID) + text[start:]
 }
 
 func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
@@ -2758,6 +2876,7 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 		if typ == "compacted" {
 			p, _ := row["payload"].(map[string]interface{})
 			ps.CompactSummary = codexCompactionSummary(p, ps.PostCompact)
+			ps.SummaryEncrypted = strings.TrimSpace(extractContentText(p["message"])) == ""
 			ps.PreCompactTurns = turnID
 			ps.PostCompact = nil
 			continue
@@ -2769,6 +2888,7 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 			}
 			ps.PreCompactTurns = turnID
 			ps.CompactSummary = summary
+			ps.SummaryEncrypted = false
 			ps.PostCompact = nil
 			continue
 		}
@@ -3206,7 +3326,7 @@ func summarizeToolOutput(raw string) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(strings.Join(lines[:headCount], "\n"))
-	sb.WriteString(fmt.Sprintf("\n... [collapsed %d bytes / %d lines; full output: baton history <session_id> <turn>] ...\n", len(raw), len(lines)))
+	sb.WriteString(fmt.Sprintf("\n... [collapsed %d bytes / %d lines; full output: baton hist <session_id> <turn>] ...\n", len(raw), len(lines)))
 	if tailCount > 0 {
 		sb.WriteString(strings.Join(lines[len(lines)-tailCount:], "\n"))
 	}
@@ -3271,7 +3391,7 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 	sb.WriteString(fmt.Sprintf("- **Source log**: `%s`\n", ps.SourceFile))
 	activeContextPath := filepath.Join(handoffDir, "active_context.md")
 	sb.WriteString(fmt.Sprintf("- **Active context file**: `%s`\n", activeContextPath))
-	sb.WriteString(fmt.Sprintf("- **Earlier turns and full tool outputs**: `baton history %s` lists the user's prompts by turn number; `baton history %s <N>` prints turn N in full\n\n", ps.SessionID, ps.SessionID))
+	sb.WriteString(fmt.Sprintf("- **Earlier turns and full tool outputs**: `baton hist %s` lists the user's prompts by turn number; `baton hist %s <N>` prints turn N in full\n\n", ps.SessionID, ps.SessionID))
 
 	if vcsStatus := detectVCSStatus(); vcsStatus != "" {
 		sb.WriteString("## Current Workspace Status:\n```\n")

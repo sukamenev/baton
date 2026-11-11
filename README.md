@@ -130,14 +130,14 @@ Local files that differ are kept as `.baton.bak`. baton also checks that the fol
 | Command | Description |
 |---|---|
 | `baton resume <name\|#>` | Continue a session from its latest point in any agent (`--load` always loads it here). |
-| `baton save [name]` | Save the current session (default name: the one it was loaded or saved as, else the folder name) and print a prompt for the next agent. |
+| `baton save [name]` | Save the current session (default name: the one it was loaded or saved as, else the folder name) and print a prompt for the next agent. In Codex, after a compaction on OpenAI's servers (its summary is encrypted), baton asks the agent for a recap and a rerun with `--summary <file>`; `baton push` waits for the recap before sending. |
 | `baton load [name\|#\|id\|URL]` | Load a session saved in baton; without arguments, the most recently saved one. |
 | `baton list [--all] [agent] [query]` | List saved sessions, newest first; `--all` adds older versions. |
 | `baton import [#\|name\|id] [as name] [--no-load]` | List recent sessions of all agents, or save one into baton and load it. |
 | `baton push [name]` | Encrypt and upload the session with changed files; prints a link for `baton load`. |
 | `baton rm <name\|#>` | Delete a saved session. The agent's own log is not touched. |
 | `baton clear` | Delete all saved sessions and temporary files. |
-| `baton history <session> [N \| from to \| --grep text]` | Show a session's turns: the user's prompts by turn number, turn N in full, a range, or the turns containing text. It reads the agent's own log while it is on this machine (also the turns before the latest compaction), else the snapshot. |
+| `baton hist <session> [N \| from to \| --grep text]` | Show a session's turns: the user's prompts by turn number, turn N in full, a range, or the turns containing text. It reads the agent's own log while it is on this machine (also the turns before the latest compaction), else the snapshot. |
 | `baton update` | Update baton and the installed skills. |
 
 Session formats, size measurement, encryption, and other details: [docs/INTERNALS.md](docs/INTERNALS.md).

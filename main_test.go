@@ -711,7 +711,7 @@ func handoffHas(t *testing.T, ps *ParsedSession, want string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Turns before the compaction are read on request (`baton history`).
+	// Turns before the compaction are read on request (`baton hist`).
 	var full strings.Builder
 	for _, turn := range ps.AllTurns {
 		full.WriteString(renderTurn(turn, true))

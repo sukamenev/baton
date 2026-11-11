@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// `baton history` shows a session's turns on request instead of writing the whole
+// `baton hist` shows a session's turns on request instead of writing the whole
 // transcript next to every handoff. It reads the agent's own log while it exists
 // on this machine (all turns, also those before the latest compaction), else the
 // snapshot saved in baton (the turns after the latest compaction).
@@ -46,11 +46,31 @@ func resolveHistorySession(q string) (*ParsedSession, error) {
 	}
 	// An ID or its prefix as shown in lists (8 characters), with or without the
 	// agent in front.
-	for _, agent := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi"} {
-		low = strings.TrimPrefix(low, agent+"-")
+	agent := ""
+	for _, a := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi"} {
+		if strings.HasPrefix(low, a+"-") {
+			agent, low = a, strings.TrimPrefix(low, a+"-")
+			break
+		}
 	}
-	if c, ok := findCandidateByID(cands, low); ok {
-		return parseCandidate(c)
+	var found []SessionCandidate
+	if len(low) >= 4 {
+		for _, c := range candidatesByIDPrefix(cands, low) {
+			if agent == "" || c.Agent == agent {
+				found = append(found, c)
+			}
+		}
+	}
+	switch len(found) {
+	case 1:
+		return parseCandidate(found[0])
+	case 0:
+	default:
+		var ids []string
+		for _, c := range found {
+			ids = append(ids, "`"+sessionIDForPath(c.Agent, c.Path)+"`")
+		}
+		return nil, fmt.Errorf("%d sessions start with %q; give a longer ID: %s", len(found), q, strings.Join(ids, ", "))
 	}
 	return nil, fmt.Errorf("no session %q: give the Session ID from the handoff or a saved session name", q)
 }
@@ -67,10 +87,10 @@ func sourceSession(snap *ParsedSession, cands []SessionCandidate) (*ParsedSessio
 	return nil, false
 }
 
-// historyReport implements `baton history <session> [N | from to | --grep text]`.
+// historyReport implements `baton hist <session> [N | from to | --grep text]`.
 func historyReport(args []string) (string, error) {
 	if len(args) == 0 {
-		return "", fmt.Errorf("usage: baton history <session_id|name> [turn | from to | --grep text]")
+		return "", fmt.Errorf("usage: baton hist <session_id|name> [turn | from to | --grep text]")
 	}
 	ps, err := resolveHistorySession(args[0])
 	if err != nil {
@@ -82,7 +102,7 @@ func historyReport(args []string) (string, error) {
 		return historyIndex(ps), nil
 	case rest[0] == "--grep" || rest[0] == "-g":
 		if len(rest) < 2 {
-			return "", fmt.Errorf("usage: baton history <session> --grep <text>")
+			return "", fmt.Errorf("usage: baton hist <session> --grep <text>")
 		}
 		return historyGrep(ps, strings.Join(rest[1:], " ")), nil
 	}
@@ -111,7 +131,7 @@ func historyReport(args []string) (string, error) {
 	if sb.Len() == 0 {
 		return "", fmt.Errorf("no turns #%d-#%d in %s%s", from, to, ps.SessionID, historyCoverage(ps))
 	}
-	sb.WriteString("\nLong outputs are shortened; `baton history " + ps.SessionID + " <N>` prints turn N in full.\n")
+	sb.WriteString("\nLong outputs are shortened; `baton hist " + ps.SessionID + " <N>` prints turn N in full.\n")
 	return sb.String(), nil
 }
 
@@ -160,7 +180,7 @@ func historyIndex(ps *ParsedSession) string {
 			sb.WriteString(fmt.Sprintf("#%d %s\n", t.TurnID, truncateInline(p, 160)))
 		}
 	}
-	sb.WriteString(fmt.Sprintf("\nRead turns: `baton history %s <from> <to>`; one turn in full: `baton history %s <N>`; search: `baton history %s --grep <text>`.\n",
+	sb.WriteString(fmt.Sprintf("\nRead turns: `baton hist %s <from> <to>`; one turn in full: `baton hist %s <N>`; search: `baton hist %s --grep <text>`.\n",
 		ps.SessionID, ps.SessionID, ps.SessionID))
 	return sb.String()
 }

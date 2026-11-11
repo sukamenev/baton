@@ -97,6 +97,8 @@ type pushReport struct {
 	Files, FilesSize, Rules int
 	// Archive is the size of the encrypted upload.
 	Archive int
+	// RecapNote asks a Codex agent for a recap of an encrypted compaction.
+	RecapNote string
 }
 
 // pushRemoteSession uploads the current session.
@@ -120,6 +122,9 @@ func pushRemoteSessionToken(name, storage, localDir string, r *pushReport) (stri
 	saveName := strings.TrimSpace(name)
 	if saveName == "" {
 		saveName = defaultSaveName(ps)
+	}
+	if r.RecapNote, err = applyRecap(ps, "baton push "+saveName, true); err != nil {
+		return "", err
 	}
 	_, _, _ = saveSessionToBatonStore(ps, saveName)
 	ps.Format = snapshotFormat

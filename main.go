@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.18"
+const version = "0.3.19"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -69,6 +69,12 @@ func main() {
 			}
 		}
 		os.Args = args
+	}
+
+	switch cmd {
+	case "store", "save", "name", "push":
+		// --summary <file> / --no-summary: the recap of an encrypted Codex compaction.
+		os.Args = append(os.Args[:2], takeRecapFlags(os.Args[2:])...)
 	}
 
 	switch cmd {
@@ -176,10 +182,11 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(report)
-	case "history":
+	case "hist":
 		runHistory(os.Args[2:])
 	case "turn":
-		// Old name, still named in snapshots and handoffs made before 0.3.18.
+		// Deprecated: remove on 2026-12-01. Hidden old name of `baton hist
+		// <session> <N>`, kept for handoffs and skills from before 0.3.18.
 		runHistory(os.Args[2:])
 	case "push":
 		// baton push [name] [storage] [local_dir]
@@ -241,6 +248,9 @@ To continue in another agent or on a machine where baton is not installed yet, p
 or if baton is already installed, run:
   /baton load %s
 `, token, token, token)
+	if r.RecapNote != "" {
+		fmt.Println(strings.TrimSpace(r.RecapNote))
+	}
 }
 
 // pushSummary says what was sent: the session, its size, and the files with it.
@@ -279,13 +289,15 @@ Usage:
                                     loaded or saved as, else its name in the agent, else the folder name);
                                     the session saved under that name before is kept as <name>.<date>
   baton push [name]                 Pack (tar.gz), encrypt (AES-256-GCM), and upload the current session + uncommitted files
+                                    save and push in Codex: --summary <file> takes the agent's recap of a
+                                    compaction whose summary is encrypted
   baton load [name|#|id|URL|token]  Load the latest saved session in baton, a specific saved session, or a remote URL/token
   baton list [--all]                List saved sessions in baton's local store (#1, #2, ...); --all adds older versions
   baton import [#|name|id] [as <name>] [--no-load]
                                     List raw sessions of all agents, or import one into baton's store and load it
   baton rm <name|#>                 Delete one saved session from baton's store (# as shown by baton list)
   baton clear                       Delete all locally saved sessions and temporary handoff files in baton
-  baton history <session> [N | from to | --grep text]
+  baton hist <session> [N | from to | --grep text]
                                     Show a session's turns: the user's prompts by turn number, turn N in full,
                                     a range, or the turns containing text (session: ID from the handoff or name)
   baton install                     Install SKILL.md and /baton slash command across all supported agents
