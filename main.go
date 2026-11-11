@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.17"
+const version = "0.3.18"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -176,18 +176,11 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(report)
+	case "history":
+		runHistory(os.Args[2:])
 	case "turn":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: baton turn <session_id> <turn_id>")
-			os.Exit(1)
-		}
-		turnID, _ := strconv.Atoi(os.Args[3])
-		text, err := getSessionTurnDetails(os.Args[2], turnID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println(text)
+		// Old name, still named in snapshots and handoffs made before 0.3.18.
+		runHistory(os.Args[2:])
 	case "push":
 		// baton push [name] [storage] [local_dir]
 		var name, storage, localDir string
@@ -292,7 +285,9 @@ Usage:
                                     List raw sessions of all agents, or import one into baton's store and load it
   baton rm <name|#>                 Delete one saved session from baton's store (# as shown by baton list)
   baton clear                       Delete all locally saved sessions and temporary handoff files in baton
-  baton turn <session_id> <turn_id> Print full untruncated output of a specific conversation turn
+  baton history <session> [N | from to | --grep text]
+                                    Show a session's turns: the user's prompts by turn number, turn N in full,
+                                    a range, or the turns containing text (session: ID from the handoff or name)
   baton install                     Install SKILL.md and /baton slash command across all supported agents
   baton status                      Check skill installation status for all supported agents
   baton update                      Update baton (via go install or SHA-256 verified OS release) and refresh SKILL.md

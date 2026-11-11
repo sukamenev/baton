@@ -1151,36 +1151,6 @@ func loadSessionContext(agent, query string) (string, error) {
 	return formatHandoffSummary(parsed, handoffDir, nil) + attachCurrentSession(chainName(parsed)), nil
 }
 
-func getSessionTurnDetails(sessionID string, turnID int) (string, error) {
-	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
-	}
-	turnsPath := filepath.Join(handoffBaseDir(), filepath.Base(sessionID), "turns.json")
-	data, err := os.ReadFile(turnsPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open %s: %w", turnsPath, err)
-	}
-	var turns []SessionTurn
-	if err := json.Unmarshal(data, &turns); err != nil {
-		return "", err
-	}
-	for _, t := range turns {
-		if t.TurnID == turnID {
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("# Turn #%d (%s)\n", t.TurnID, t.Role))
-			if t.ToolName != "" {
-				sb.WriteString(fmt.Sprintf("Tool: `%s`\n", t.ToolName))
-			}
-			sb.WriteString("\n" + t.Text + "\n")
-			if t.RawOutput != "" {
-				sb.WriteString("\n## Full Tool Output:\n```\n" + t.RawOutput + "\n```\n")
-			}
-			return sb.String(), nil
-		}
-	}
-	return "", fmt.Errorf("turn #%d not found in session %s", turnID, sessionID)
-}
-
 // findAndParseSession finds a session in Baton's saved store by number, name, or ID.
 func findAndParseSession(agent, query string) (*ParsedSession, error) {
 	if query == "" {
@@ -2709,6 +2679,45 @@ func parseAgyTranscriptJSONL(path string, ps *ParsedSession) error {
 	return nil
 }
 
+// codexCompactionSummary is the summary of a Codex `compacted` row. Codex
+// compacting locally writes it to `message`; compacting on OpenAI's servers (the
+// usual case) leaves `message` empty and keeps the summary only as an encrypted
+// `compaction` item in `replacement_history`, which no one but OpenAI's model can
+// read. Then the summary is made of what Codex kept readable: the user's
+// messages in `replacement_history`, plus the last assistant reply before the
+// compaction (from before, the window that ends here).
+func codexCompactionSummary(payload map[string]interface{}, before []SessionTurn) string {
+	if msg := strings.TrimSpace(extractContentText(payload["message"])); msg != "" {
+		return msg
+	}
+	var sb strings.Builder
+	sb.WriteString("[Codex compacted the conversation on OpenAI's servers: its summary is encrypted and cannot be read. Below are the user's messages Codex kept and the last assistant reply before the compaction.]\n")
+	n := 0
+	items, _ := payload["replacement_history"].([]interface{})
+	for _, it := range items {
+		m, _ := it.(map[string]interface{})
+		if m == nil || m["type"] != "message" || m["role"] != "user" {
+			continue
+		}
+		text := strings.TrimSpace(extractContentText(m["content"]))
+		if cleanUserPrompt(text) == "" {
+			continue // instructions and environment notes Codex injects
+		}
+		if n == 0 {
+			sb.WriteString("\n## User messages kept by Codex\n")
+		}
+		n++
+		sb.WriteString(fmt.Sprintf("\n%d. %s\n", n, text))
+	}
+	for i := len(before) - 1; i >= 0; i-- {
+		if before[i].Role == "assistant" && strings.TrimSpace(before[i].Text) != "" {
+			sb.WriteString(fmt.Sprintf("\n## Last assistant reply before the compaction (turn #%d)\n\n%s\n", before[i].TurnID, strings.TrimSpace(before[i].Text)))
+			break
+		}
+	}
+	return sb.String()
+}
+
 func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -2746,6 +2755,13 @@ func parseCodexOrGenericJSONL(path string, ps *ParsedSession) error {
 			}
 		}
 
+		if typ == "compacted" {
+			p, _ := row["payload"].(map[string]interface{})
+			ps.CompactSummary = codexCompactionSummary(p, ps.PostCompact)
+			ps.PreCompactTurns = turnID
+			ps.PostCompact = nil
+			continue
+		}
 		if typ == "compaction" || typ == "context_compacted" || (role != "tool" && (strings.HasPrefix(strings.TrimSpace(content), "[Context Compacted]") || strings.HasPrefix(strings.TrimSpace(content), "<context_summary>"))) {
 			summary := content
 			if summary == "" {
@@ -3190,7 +3206,7 @@ func summarizeToolOutput(raw string) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(strings.Join(lines[:headCount], "\n"))
-	sb.WriteString(fmt.Sprintf("\n... [collapsed %d bytes / %d lines; full output in turns.json or via get_session_turn] ...\n", len(raw), len(lines)))
+	sb.WriteString(fmt.Sprintf("\n... [collapsed %d bytes / %d lines; full output: baton history <session_id> <turn>] ...\n", len(raw), len(lines)))
 	if tailCount > 0 {
 		sb.WriteString(strings.Join(lines[len(lines)-tailCount:], "\n"))
 	}
@@ -3219,33 +3235,16 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 func writeHandoffDirectory(ps *ParsedSession, globalRules map[string]string) (string, error) {
-	handoffDir := filepath.Join(handoffBaseDir(), filepath.Base(ps.SessionID))
+	name := filepath.Base(ps.SessionID)
+	if name == "." || name == ".." || name == string(filepath.Separator) {
+		return "", fmt.Errorf("session ID is missing")
+	}
+	handoffDir := filepath.Join(handoffBaseDir(), name)
+	// Start clean: part files of an earlier, larger load must not linger.
+	_ = os.RemoveAll(handoffDir)
 	if err := os.MkdirAll(handoffDir, 0700); err != nil {
 		return "", err
 	}
-
-	turnsBytes, err := json.MarshalIndent(ps.AllTurns, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(filepath.Join(handoffDir, "turns.json"), turnsBytes, 0600)
-	}
-
-	var full strings.Builder
-	full.WriteString(fmt.Sprintf("# Full Session Transcript: %s (%s)\n", ps.SessionID, ps.Agent))
-	if ps.Title != "" {
-		full.WriteString(fmt.Sprintf("Session Name: **%s**\n", ps.Title))
-	}
-	full.WriteString(fmt.Sprintf("Source file: `%s`\n\n", ps.SourceFile))
-	if ps.CompactSummary != "" {
-		full.WriteString(fmt.Sprintf("## Latest Compaction Summary (after turn #%d)\n\n%s\n\n", ps.PreCompactTurns, ps.CompactSummary))
-	}
-	full.WriteString("## Complete Turn History\n\n")
-	for _, t := range ps.AllTurns {
-		full.WriteString(fmt.Sprintf("### [Turn #%d] %s\n%s\n\n", t.TurnID, t.Role, t.Text))
-		if t.RawOutput != "" && t.RawOutput != t.Text {
-			full.WriteString("```\n" + t.RawOutput + "\n```\n\n")
-		}
-	}
-	_ = os.WriteFile(filepath.Join(handoffDir, "full_dialogue.md"), []byte(full.String()), 0600)
 
 	if len(globalRules) > 0 {
 		rulesDir := filepath.Join(handoffDir, "global_rules")
@@ -3272,8 +3271,7 @@ func formatHandoffSummary(ps *ParsedSession, handoffDir string, globalRules map[
 	sb.WriteString(fmt.Sprintf("- **Source log**: `%s`\n", ps.SourceFile))
 	activeContextPath := filepath.Join(handoffDir, "active_context.md")
 	sb.WriteString(fmt.Sprintf("- **Active context file**: `%s`\n", activeContextPath))
-	sb.WriteString(fmt.Sprintf("- **Full lossless transcript**: `%s`\n", filepath.Join(handoffDir, "full_dialogue.md")))
-	sb.WriteString(fmt.Sprintf("- **Turn index (`get_session_turn`)**: `%s`\n\n", filepath.Join(handoffDir, "turns.json")))
+	sb.WriteString(fmt.Sprintf("- **Earlier turns and full tool outputs**: `baton history %s` lists the user's prompts by turn number; `baton history %s <N>` prints turn N in full\n\n", ps.SessionID, ps.SessionID))
 
 	if vcsStatus := detectVCSStatus(); vcsStatus != "" {
 		sb.WriteString("## Current Workspace Status:\n```\n")

@@ -137,7 +137,7 @@ Local files that differ are kept as `.baton.bak`. baton also checks that the fol
 | `baton push [name]` | Encrypt and upload the session with changed files; prints a link for `baton load`. |
 | `baton rm <name\|#>` | Delete a saved session. The agent's own log is not touched. |
 | `baton clear` | Delete all saved sessions and temporary files. |
-| `baton turn <session_id> <turn_id>` | Print one turn of a session in full. |
+| `baton history <session> [N \| from to \| --grep text]` | Show a session's turns: the user's prompts by turn number, turn N in full, a range, or the turns containing text. It reads the agent's own log while it is on this machine (also the turns before the latest compaction), else the snapshot. |
 | `baton update` | Update baton and the installed skills. |
 
 Session formats, size measurement, encryption, and other details: [docs/INTERNALS.md](docs/INTERNALS.md).

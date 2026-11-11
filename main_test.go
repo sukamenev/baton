@@ -711,11 +711,12 @@ func handoffHas(t *testing.T, ps *ParsedSession, want string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := os.ReadFile(filepath.Join(dir, "full_dialogue.md"))
-	if err != nil {
-		t.Fatal(err)
+	// Turns before the compaction are read on request (`baton history`).
+	var full strings.Builder
+	for _, turn := range ps.AllTurns {
+		full.WriteString(renderTurn(turn, true))
 	}
-	combined := string(body) + "\n" + string(full)
+	combined := string(body) + "\n" + full.String()
 	if !strings.Contains(combined, want) {
 		t.Fatalf("handoff for [%s] %s missing %q", ps.Agent, ps.SourceFile, want)
 	}

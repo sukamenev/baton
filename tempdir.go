@@ -33,8 +33,8 @@ var (
 	fallbackHandoffDir  string
 )
 
-// handoffBaseDir is where `baton load` writes active_context*.md, full_dialogue.md
-// and turns.json. If the per-user root cannot be trusted, this run uses a fresh
+// handoffBaseDir is where `baton load` writes active_context*.md and the global
+// rule files. If the per-user root cannot be trusted, this run uses a fresh
 // private directory with a random name instead.
 func handoffBaseDir() string {
 	if root, ok := batonTempRoot(); ok {
