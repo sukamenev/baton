@@ -138,6 +138,9 @@ func agentSessionID(path string) string {
 	if _, id, ok := strings.Cut(path, "::"); ok {
 		return strings.TrimPrefix(id, "ses_")
 	}
+	if filepath.Base(path) == "messages.jsonl" && strings.HasPrefix(filepath.Base(filepath.Dir(path)), "sess_") {
+		return strings.TrimPrefix(filepath.Base(filepath.Dir(path)), "sess_")
+	}
 	if all := uuidPattern.FindAllString(path, -1); len(all) > 0 {
 		return strings.ToLower(all[len(all)-1])
 	}
@@ -178,7 +181,14 @@ func findCandidateByID(candidates []SessionCandidate, q string) (SessionCandidat
 func candidatesByIDPrefix(candidates []SessionCandidate, q string) []SessionCandidate {
 	var found []SessionCandidate
 	for _, c := range candidates {
-		if strings.HasPrefix(strings.ToLower(c.SessionID()), q) {
+		prefix := q
+		if c.Agent == "kiro" {
+			prefix = strings.TrimPrefix(prefix, "sess_")
+			if len(prefix) < 4 {
+				continue
+			}
+		}
+		if strings.HasPrefix(strings.ToLower(c.SessionID()), prefix) {
 			found = append(found, c)
 		}
 	}
@@ -590,6 +600,9 @@ func saveAliases(aliases map[string]string) error {
 // detectCallerAgent identifies which CLI coding agent is currently executing baton
 // by inspecting agent-specific environment variables and walking the parent process tree.
 func detectCallerAgent() string {
+	if os.Getenv("KIRO_SESSION_ID") != "" {
+		return "kiro"
+	}
 	if os.Getenv("CURSOR_AGENT") != "" || os.Getenv("CURSOR_CONVERSATION_ID") != "" {
 		return "cursor"
 	}
@@ -615,6 +628,8 @@ func detectCallerAgent() string {
 		if envBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid)); err == nil && len(envBytes) > 0 {
 			envStr := string(envBytes)
 			switch {
+			case strings.Contains(envStr, "KIRO_SESSION_ID="):
+				return "kiro"
 			case strings.Contains(envStr, "CURSOR_AGENT=") || strings.Contains(envStr, "CURSOR_CONVERSATION_ID="):
 				return "cursor"
 			case strings.Contains(envStr, "CLAUDECODE=") || strings.Contains(envStr, "CLAUDE_CODE_ENTRYPOINT="):
@@ -641,6 +656,8 @@ func detectCallerAgent() string {
 		}
 		switch {
 		case lower == "":
+		case isKiroCmdline(lower):
+			return "kiro"
 		case strings.Contains(lower, "cursor-agent") || strings.Contains(lower, "cursor agent"):
 			return "cursor"
 		case strings.Contains(lower, "opencode"):
@@ -924,13 +941,16 @@ const importListLimit = 15
 
 // sessionIDEnvs are the variables in which agents export the ID of the
 // session that runs a shell command.
-var sessionIDEnvs = []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "CURSOR_CONVERSATION_ID"}
+var sessionIDEnvs = []string{"KIRO_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "CURSOR_CONVERSATION_ID"}
 
 // isCallerOwnSession reports whether a raw session file belongs to the agent
 // session that is running baton right now (it is a fresh handoff receiver,
 // not something to import).
 func isCallerOwnSession(path string) bool {
 	base := filepath.Base(path)
+	if base == "messages.jsonl" {
+		base = filepath.Base(filepath.Dir(path))
+	}
 	for _, env := range sessionIDEnvs {
 		if id := strings.TrimSpace(os.Getenv(env)); id != "" && strings.Contains(base, id) {
 			return true
@@ -1053,6 +1073,23 @@ func importSession(args []string) (string, error) {
 	}
 
 	chosen, ok := findImportCandidate(candidates, query)
+	if _, numberErr := strconv.Atoi(query); !ok && numberErr != nil {
+		// A name or ID can refer to an older session outside the numbered list.
+		// Numbers must keep referring to the exact list the user saw.
+		var matching []SessionCandidate
+		for _, c := range discoverSessions("all", query) {
+			if !isCallerOwnSession(c.Path) {
+				matching = append(matching, c)
+			}
+		}
+		var eligible []SessionCandidate
+		for i, m := range measureSessions(matching) {
+			if !m.Stub {
+				eligible = append(eligible, matching[i])
+			}
+		}
+		chosen, ok = findImportCandidate(eligible, query)
+	}
 	if !ok {
 		return formatImportListReport(query, candidates), nil
 	}
@@ -1476,6 +1513,9 @@ func discoverSessions(agent, query string) []SessionCandidate {
 	if agent == "all" || agent == "kimi" {
 		all = append(all, discoverKimiSessions(kimiBaseDir(home), aliases, query)...)
 	}
+	if agent == "all" || agent == "kiro" {
+		all = append(all, discoverKiroSessions(kiroBaseDir(home), aliases, query)...)
+	}
 
 	// Include sessions imported from remote URLs via `baton load <URL>`
 	importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
@@ -1483,7 +1523,7 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		for _, m := range importFiles {
 			ag := "imported"
 			base := filepath.Base(m)
-			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi"} {
+			for _, known := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi", "kiro"} {
 				if strings.HasPrefix(base, known+"-") {
 					ag = known
 					break
@@ -1656,6 +1696,11 @@ func inspectSessionQuickMeta(agent, path string) (title, cwd, preview string) {
 		}
 		return "", "", "Imported remote baton session"
 	}
+	if agent == "kiro" {
+		if meta, err := readKiroSessionMeta(path); err == nil {
+			title, cwd = kiroTitle(path, meta), meta.cwd()
+		}
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", ""
@@ -1765,6 +1810,13 @@ func claudeQueuedPrompt(row map[string]interface{}) string {
 }
 
 func userPromptFromRow(row map[string]interface{}) string {
+	if payload, ok := row["payload"].(map[string]interface{}); ok && row["id"] != nil {
+		// Kiro V3 messages use payload.type, not message.role.
+		if typ, _ := payload["type"].(string); typ == "user" {
+			text, _ := payload["content"].(string)
+			return cleanUserPrompt(text)
+		}
+	}
 	if isMeta, _ := row["isMeta"].(bool); isMeta {
 		return ""
 	}
@@ -1960,6 +2012,9 @@ func sessionIDForPath(agent, path string) string {
 	if agent == "kimi" {
 		base = strings.TrimPrefix(filepath.Base(kimiSessionDir(realPath)), "session_")
 	}
+	if agent == "kiro" && filepath.Base(realPath) == "messages.jsonl" {
+		base = strings.TrimPrefix(filepath.Base(filepath.Dir(realPath)), "sess_")
+	}
 	if explicitSessionID != "" {
 		base = explicitSessionID
 	} else if base == "transcript_full" || base == "transcript" {
@@ -2028,6 +2083,9 @@ func parseSessionFile(agent, path string, modTime time.Time) (*ParsedSession, er
 		return ps, err
 	case "kimi":
 		err := parseKimiSession(realPath, ps)
+		return ps, err
+	case "kiro":
+		err := parseKiroSession(realPath, ps)
 		return ps, err
 	case "agy":
 		err := parseAgyTranscriptJSONL(realPath, ps)
@@ -3274,7 +3332,7 @@ func recordToolSideEffects(name string, input map[string]interface{}, modSet map
 		return
 	}
 	lower := strings.ToLower(name)
-	if lower == "bash" || lower == "run_command" || lower == "execute_command" || lower == "shell" || lower == "local_shell_call" || lower == "terminal" {
+	if lower == "bash" || lower == "execute_bash" || lower == "run_command" || lower == "execute_command" || lower == "shell" || lower == "local_shell_call" || lower == "terminal" {
 		for _, k := range []string{"command", "CommandLine", "cmd"} {
 			if cmd, ok := input[k].(string); ok && strings.TrimSpace(cmd) != "" {
 				*commands = append(*commands, strings.TrimSpace(cmd))

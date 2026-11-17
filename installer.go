@@ -32,6 +32,7 @@ func skillTargetPaths(home string) []string {
 		filepath.Join(opencodeConfigDir(home), "skills", "baton", "SKILL.md"),
 		filepath.Join(cursorBaseDir(home), "skills", "baton", "SKILL.md"),
 		filepath.Join(kimiBaseDir(home), "skills", "baton", "SKILL.md"),
+		filepath.Join(kiroBaseDir(home), "skills", "baton", "SKILL.md"),
 	}
 }
 
@@ -111,6 +112,7 @@ func runStatus() {
 		{"OpenCode Skill (~/.config/opencode/skills/baton/SKILL.md)", filepath.Join(opencodeConfigDir(home), "skills", "baton", "SKILL.md")},
 		{"Cursor Skill (~/.cursor/skills/baton/SKILL.md)", filepath.Join(cursorBaseDir(home), "skills", "baton", "SKILL.md")},
 		{"Kimi Code Skill (~/.kimi-code/skills/baton/SKILL.md)", filepath.Join(kimiBaseDir(home), "skills", "baton", "SKILL.md")},
+		{"Kiro CLI V3 Skill (~/.kiro/skills/baton/SKILL.md)", filepath.Join(kiroBaseDir(home), "skills", "baton", "SKILL.md")},
 		{"Slash Command /baton (~/.claude/commands/baton.md)", filepath.Join(claudeBaseDir(home), "commands", "baton.md")},
 	}
 

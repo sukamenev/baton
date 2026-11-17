@@ -22,6 +22,7 @@ baton is a small Go program plus an agent skill (`SKILL.md`) for **Linux, macOS,
 | OpenCode | `opencode` |
 | Cursor (IDE agent and `agent` CLI) | `cursor` |
 | Kimi Code (CLI and Desktop), experimental | `kimi` |
+| Kiro CLI V3 | `kiro` |
 
 Running DeepSeek, GLM, Grok, or local models? Run them inside Pi or OpenCode, and baton hands sessions to them from Claude or Codex.
 
@@ -40,7 +41,7 @@ baton reads the session log that the agent already keeps on disk. It hands the n
 Ask your current agent to install baton (it builds baton from source; Go is required):
 
 ```text
-Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode, cursor, kimi). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
+Read https://raw.githubusercontent.com/sukamenev/baton/main/INSTALL.md and install baton from source for all CLI agents installed on my system (claude, codex, agy, pi, opencode, cursor, kimi, kiro). Verify that the Go compiler is available, build the binary into ~/.local/bin/baton, run baton install to install the SKILL.md skill and the /baton slash command, and then verify the installation by running baton status.
 ```
 
 Or install manually (Go 1.22+):
@@ -88,6 +89,8 @@ Talk to your agent in plain words and mention baton, or run `baton` commands dir
 
 A session loaded through baton keeps the name: Claude Code and Codex show it in their own `/resume` menus, and a later `baton save` without a name saves it under the same name. The session saved under that name before is kept as `my_session.2026-11-09_14-30` (`baton list --all` shows such older versions; the 3 newest are kept).
 
+Kiro CLI V3 reads the same skill from `~/.kiro/skills/baton/` (installed by `baton install`). Rename a session inside Kiro with `/sessions rename my_session`, then use `baton import my_session` in another agent. baton recognizes Kiro's user-set titles, preserves them on load, and uses `kiro-cli --resume-id <id>` for native continuation. V2 and SQLite session stores are not supported.
+
 ### Find a saved session
 
 Ask *"What sessions are saved in baton?"* or run `baton list`. Each session is shown on one line like this, with its folder and your last prompt below:
@@ -102,6 +105,7 @@ If the agent hit its limit before you saved, ask the next agent *"Use baton to l
 
 ```text
 baton import 1
+baton import my_session
 baton import 7 as my_session
 ```
 

@@ -93,12 +93,13 @@ func isolateAgents(t *testing.T) string {
 	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex"))
 	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(tmp, "pi"))
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(tmp, "kimi"))
+	t.Setenv("KIRO_HOME", filepath.Join(tmp, "kiro"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "xdg-data"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "xdg-cache"))
 	t.Setenv("CURSOR_HOME", filepath.Join(tmp, "cursor-home"))
 	t.Setenv("TMPDIR", filepath.Join(tmp, "tmp"))
 	for _, v := range []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
-		"CODEX_SANDBOX", "CODEX_CI", "PI_SESSION_ID", "CURSOR_AGENT", "CURSOR_CONVERSATION_ID"} {
+		"CODEX_SANDBOX", "CODEX_CI", "PI_SESSION_ID", "CURSOR_AGENT", "CURSOR_CONVERSATION_ID", "KIRO_SESSION_ID"} {
 		t.Setenv(v, "")
 	}
 	_ = os.MkdirAll(filepath.Join(tmp, "tmp"), 0700)

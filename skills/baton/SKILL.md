@@ -47,6 +47,8 @@ Note for Antigravity CLI (agy): run every `baton` command with `BypassSandbox: t
 
 In Cursor (IDE agent and `agent` CLI), use the installed Baton skill to run the same `baton` commands. The activation conditions above apply in Cursor too.
 
+In Kiro CLI V3, use the installed Baton skill from `~/.kiro/skills/baton/` (`$KIRO_HOME` is honored) to run the same commands. Kiro's `/sessions rename <name>` sets the session name that `baton import <name>` and `baton save` recognize. A steering file does not rename a session. Only the V3 session format is supported; V2 and SQLite sessions are not read.
+
 `baton resume <name>` continues a session from its latest point: the copy saved in baton or an agent session that went on after it. If its output says to continue the session natively, do not load anything: show the user the commands from the output exactly as printed and stop. Run `baton resume <name> --load` only if the user asks to load it into this conversation anyway.
 
 `baton load`, `baton resume`, and `baton import` refuse to load a session that worked in another folder that exists on this machine (you cannot change your own working folder). Then show the user baton's message, including its `cd … && <agent>` command, and ask whether they will restart the agent in that folder (recommended) or want to load the session here anyway. Rerun the same command with `--force` only if the user chooses to load it here.

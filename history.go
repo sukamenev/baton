@@ -47,7 +47,7 @@ func resolveHistorySession(q string) (*ParsedSession, error) {
 	// An ID or its prefix as shown in lists (8 characters), with or without the
 	// agent in front.
 	agent := ""
-	for _, a := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi"} {
+	for _, a := range []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi", "kiro"} {
 		if strings.HasPrefix(low, a+"-") {
 			agent, low = a, strings.TrimPrefix(low, a+"-")
 			break

@@ -229,9 +229,18 @@ func currentSessionCandidate(cands []SessionCandidate) (SessionCandidate, bool) 
 		}
 		exported = true
 		for _, c := range cands {
+			if env == "KIRO_SESSION_ID" && c.Agent != "kiro" {
+				continue
+			}
 			if strings.Contains(strings.ToLower(c.Path), id) {
 				return c, true
 			}
+		}
+		if env == "KIRO_SESSION_ID" {
+			// Kiro can be launched from another agent's shell and inherit that
+			// agent's session ID. Its own explicit ID must take precedence even
+			// before the Kiro transcript has been created.
+			return SessionCandidate{}, false
 		}
 	}
 	if exported {
@@ -319,6 +328,8 @@ func userSessionName(agent, path string) string {
 		return lastJSONLField(path, "session_info", "name")
 	case "kimi":
 		return readKimiSessionState(kimiSessionDir(path)).name()
+	case "kiro":
+		return kiroUserTitle(path)
 	case "agy":
 		return agyUserName(path)
 	}
@@ -346,11 +357,16 @@ func appendJSONLine(path string, row interface{}, create bool) error {
 
 // renameAgentSession gives the agent session the saved name, so the agent's own
 // resume menu shows it instead of an automatic title. It writes the same record
-// the agent's own rename writes, only for agents whose logs are append-only
-// (Claude Code, Codex). A name the user set in Claude Code is kept; prevName is
+// the agent's own rename writes (an append-only log or Kiro's locked title
+// sidecar). A name the user set in Claude Code or Kiro is kept; prevName is
 // the name baton gave this session earlier, which may be replaced.
 func renameAgentSession(c SessionCandidate, name, prevName string) string {
 	switch c.Agent {
+	case "kiro":
+		if strings.EqualFold(kiroUserTitle(c.Path), name) || !renameKiroSession(c.Path, name, prevName) {
+			return ""
+		}
+		return fmt.Sprintf("This Kiro CLI session is now named **%s** in `/sessions`.", name)
 	case "claude":
 		current := userSessionName("claude", c.Path)
 		if strings.EqualFold(current, name) {
@@ -472,6 +488,8 @@ func nativeResumeCommand(c SessionCandidate) string {
 	case "kimi":
 		// Kimi's own IDs keep the "session_" prefix of the session directory.
 		return "kimi --session " + filepath.Base(kimiSessionDir(c.Path))
+	case "kiro":
+		return "kiro-cli --resume-id sess_" + strings.TrimPrefix(id, "sess_")
 	case "opencode":
 		if _, full, ok := strings.Cut(c.Path, "::"); ok {
 			id = full
@@ -775,6 +793,8 @@ func agentLaunchCommand(agent string) string {
 		return agent
 	case "cursor":
 		return "agent"
+	case "kiro":
+		return "kiro-cli"
 	}
 	return "<your agent>"
 }

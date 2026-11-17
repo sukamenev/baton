@@ -39,6 +39,16 @@ Unlike always-on MCP servers that stay resident and add tool schemas to every co
 | **OpenCode** (`opencode`) | `~/.local/share/opencode/opencode.db` on every OS (`$XDG_DATA_HOME`) | SQLite (`session_v2` + `session_message` in OpenCode 2.x; `session`/`message`/`part` in 1.x), read via the `sqlite3` command | `compaction` message with `summary` (manual and auto) |
 | **Cursor** (`cursor`) | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` (IDE and `agent` CLI). Title and folder: `~/.cursor/chats/<workspace>/<uuid>/meta.json` | JSONL (`role` + `message.content` `text` / `tool_use`) | `compaction/segment_*.md` beside the JSONL (summary + verbatim turns); the JSONL is the post-compaction tail |
 | **Kimi Code** (`kimi`) | `~/.kimi-code/sessions/<workspaceId>/session_<id>/agents/main/wire.jsonl` (CLI and Desktop; `$KIMI_CODE_HOME`). Metadata: `state.json`, `session_index.jsonl` | v2 wire JSONL (`agent.message.appended` history entries) | `context.apply_compaction` (string, context-string, or legacy message summary); `context.clear` |
+| **Kiro CLI V3** (`kiro`) | `~/.kiro/sessions/<workspaceHash>/sess_<id>/messages.jsonl` (`$KIRO_HOME`). Metadata: sibling `session.json`; user titles: `sessions/dashboard-meta.json` | JSONL (`id`, `timestamp`, `payload.type`) | `assistant` with `operationType: "Summary"`; older records remain on disk |
+
+### Kiro CLI V3
+
+- Reads user messages, assistant text and readable reasoning, tool calls and full tool results. Opaque reasoning signatures and `...` placeholders are skipped.
+- The latest completed `Summary` is the compaction checkpoint. A summarization tombstone without a summary does not erase the previous context. Checkpoint reverts restore the active context before the referenced message while retaining the full history.
+- Subagent prompts and returned results are included from the main transcript. Private `sub-executions/` logs, media data, V2 JSONL, and SQLite stores are not imported.
+- Workspace paths and automatic titles come from `session.json`; user-set dashboard titles take precedence. `baton save` without a name recognizes the user's `/sessions rename` title.
+- On load, baton can set the dashboard title override using Kiro's `dashboard-meta.json.lock/owner.json` lock protocol and an atomic replacement. Existing user titles, bookmarks, tags, and unknown fields are preserved; the live `session.json` is never modified. Kiro may need to refresh its session view to show an external rename.
+- Names and IDs outside the 15-entry import list are also searchable; numbered imports retain the displayed numbering.
 
 ### Cursor
 
@@ -62,6 +72,7 @@ The last-prompt line in `baton list` and `baton import` shows what the user type
 | Claude Code | `isMeta: true` (`/context` output, skill bodies, notices) |
 | Antigravity CLI | prompts are `USER_INPUT` with `<USER_REQUEST>`; injected text is `SYSTEM_MESSAGE` |
 | Kimi Code | entry `meta.origin.kind`; text parts with `meta.source` |
+| Kiro CLI V3 | user prompts are `payload.type: "user"`; notes, summaries, and subagent requests have separate types |
 | Others | injected blocks recognized by their tags (`<environment_context>`, `<user_shell_command>`, `# AGENTS.md instructions`, …) |
 
 Bare `baton …` commands are skipped as well. If only commands follow the latest compaction, the list shows the last prompt before it. Saved snapshots store this prompt at save time, because they keep only the active context.
@@ -110,7 +121,7 @@ Only the model can read the encrypted summary, and only baton knows for sure tha
 
 `baton save` saves the session of the agent that called it, in the current folder.
 
-- **Environment variables:** Claude Code (`CLAUDECODE`), Codex (`CODEX_THREAD_ID`), Pi (`PI_SESSION_ID`), OpenCode (`OPENCODE`), Antigravity (`ANTIGRAVITY_CLI`), and Cursor (`CURSOR_CONVERSATION_ID`) are recognized this way.
+- **Environment variables:** Claude Code (`CLAUDECODE`), Codex (`CODEX_THREAD_ID`), Pi (`PI_SESSION_ID`), OpenCode (`OPENCODE`), Antigravity (`ANTIGRAVITY_CLI`), Cursor (`CURSOR_CONVERSATION_ID`), and Kiro CLI V3 (`KIRO_SESSION_ID`) are recognized this way.
 - **Parent processes (Linux):** if no variable is set, baton walks up the parent processes. Shells running a command string (`sh -c …`) are skipped, because their command line contains the project path, not the agent.
 - **Kimi Code:** Kimi passes no marker to the commands it runs, so it is recognized only by its process. On macOS and Windows use `baton import` instead.
 
@@ -127,6 +138,7 @@ For sandbox settings and security reviews. An environment variable in parenthese
 | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`), via the `sqlite3` CLI | read | same |
 | `~/.cursor/projects/`, `~/.cursor/chats/` (`CURSOR_HOME`) | read | same |
 | `~/.kimi-code/sessions/` (`KIMI_CODE_HOME`) | read | same |
+| `~/.kiro/sessions/` (`KIRO_HOME`) | read; writes a user title to `dashboard-meta.json` under Kiro's lock | same |
 | `~/.config/baton/` (`BATON_CONFIG_DIR`): `saved/`, `imported/`, `aliases.json`, `links.json` | read and write | the store: `save`, `load`, `list`, `resume`, `import`, `rm`, `clear` |
 | `/tmp/baton-<uid>/` (`%TEMP%\baton\` on Windows): `handoff/`, `cache/` | read and write | handoff files for the next agent, the import cache, update checks |
 | the current folder | read; `load <URL>` writes restored files and `.baton.bak` backups | `push` (changed files, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.agents/rules/*.md`), `load <URL>` |
@@ -141,7 +153,7 @@ Network: `push` and `load <URL>` (paste services), `update` and the daily versio
 
 `baton install` (and every `baton update`) writes `SKILL.md` into:
 
-`~/.claude/skills/baton/`, `~/.codex/skills/baton/`, `~/.gemini/config/skills/baton/`, `~/.pi/agent/skills/baton/`, `~/.config/opencode/skills/baton/`, `~/.cursor/skills/baton/`, and `$KIMI_CODE_HOME/skills/baton/` (default `~/.kimi-code/skills/baton/`).
+`~/.claude/skills/baton/`, `~/.codex/skills/baton/`, `~/.gemini/config/skills/baton/`, `~/.pi/agent/skills/baton/`, `~/.config/opencode/skills/baton/`, `~/.cursor/skills/baton/`, `$KIMI_CODE_HOME/skills/baton/` (default `~/.kimi-code/skills/baton/`), and `$KIRO_HOME/skills/baton/` (default `~/.kiro/skills/baton/`).
 
 It also installs the `/baton` slash command for Claude Code (`~/.claude/commands/baton.md`) and a Codex rule that allows running `baton` (`~/.codex/rules/baton.rules`). In Cursor the skill can also be invoked from the [`/` menu](https://cursor.com/docs/skills).
 

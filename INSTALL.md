@@ -1,6 +1,6 @@
 # INSTALL.md — AI-Assisted Build & Setup Instructions for `baton`
 
-This file is designed to be read and executed by CLI coding agents (`claude`, `codex`, `agy`, `pi`, `opencode`, `cursor`, `kimi`).
+This file is designed to be read and executed by CLI coding agents (`claude`, `codex`, `agy`, `pi`, `opencode`, `cursor`, `kimi`, `kiro`).
 
 ## Installation Steps
 
@@ -23,7 +23,7 @@ This file is designed to be read and executed by CLI coding agents (`claude`, `c
    ```bash
    ~/.local/bin/baton install
    ```
-   This installs `SKILL.md` into `~/.claude/skills/baton/`, `~/.codex/skills/baton/`, `~/.gemini/config/skills/baton/`, `~/.pi/agent/skills/baton/`, `~/.config/opencode/skills/baton/`, `~/.cursor/skills/baton/`, and `~/.kimi-code/skills/baton/` (`$KIMI_CODE_HOME` is honored), and registers the `/baton` slash command for Claude Code. Cursor uses the installed skill, which can also be selected from its `/` menu.
+   This installs `SKILL.md` into `~/.claude/skills/baton/`, `~/.codex/skills/baton/`, `~/.gemini/config/skills/baton/`, `~/.pi/agent/skills/baton/`, `~/.config/opencode/skills/baton/`, `~/.cursor/skills/baton/`, `~/.kimi-code/skills/baton/` (`$KIMI_CODE_HOME` is honored), and `~/.kiro/skills/baton/` (`$KIRO_HOME` is honored), and registers the `/baton` slash command for Claude Code. Cursor and Kiro CLI V3 use the installed skill, which can also be selected from their `/` menus.
 
 4. **Verify installation status:**
    ```bash

@@ -7,11 +7,11 @@ import (
 	"strings"
 )
 
-const version = "0.3.19"
+const version = "0.3.20"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "claude", "codex", "agy", "pi", "opencode", "cursor", "kimi", "all", "auto":
+	case "claude", "codex", "agy", "pi", "opencode", "cursor", "kimi", "kiro", "all", "auto":
 		return true
 	}
 	return false
@@ -278,7 +278,7 @@ func pushSummary(r pushReport) string {
 }
 
 func printUsage() {
-	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, opencode, cursor, kimi)
+	fmt.Printf(`baton %s — Zero-dependency CLI & Skill for lossless session handoff across AI coding agents (claude, codex, agy, pi, opencode, cursor, kimi, kiro)
 
 Usage:
   baton resume <name|#>             Continue a session from its latest point in any agent: resume it natively
