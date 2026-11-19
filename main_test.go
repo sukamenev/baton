@@ -201,7 +201,7 @@ func TestParsePiTreeAndOpenCodeSQLite(t *testing.T) {
 		if out, err := exec.Command("sqlite3", dbPath, schemaSQL).CombinedOutput(); err != nil {
 			t.Fatalf("sqlite3 init failed: %v (%s)", err, string(out))
 		}
-		candidates := discoverOpenCodeSessions(dbPath, map[string]string{}, "")
+		candidates := discoverOpenCodeSessions(dbPath, nil, "", false)
 		if len(candidates) != 1 || candidates[0].Title != "Fix add in calc.py" || candidates[0].Preview != "Now run the tests" || candidates[0].CWD != "/srv/app" {
 			t.Fatalf("expected one top-level OpenCode session with the last prompt, got %+v", candidates)
 		}
@@ -247,7 +247,7 @@ func TestParseOpenCodeV2(t *testing.T) {
 	if out, err := exec.Command("sqlite3", dbPath, schemaSQL).CombinedOutput(); err != nil {
 		t.Fatalf("sqlite3 init failed: %v (%s)", err, string(out))
 	}
-	candidates := discoverOpenCodeSessions(dbPath, map[string]string{}, "")
+	candidates := discoverOpenCodeSessions(dbPath, nil, "", false)
 	if len(candidates) != 1 || candidates[0].Title != "Fix mul in calc2.py" || candidates[0].Preview != "Now run the tests" {
 		t.Fatalf("expected one top-level OpenCode 2.x session with the last prompt, got %+v", candidates)
 	}
@@ -459,12 +459,15 @@ func TestDisplayPath(t *testing.T) {
 }
 
 func TestImportAndSaveArgs(t *testing.T) {
-	q, as, noLoad := parseImportArgs([]string{"Подтверди", "присутствие", "as", "my", "name", "--no-load"})
-	if q != "Подтверди присутствие" || as != "my name" || !noLoad {
-		t.Fatalf("parseImportArgs: got q=%q as=%q noLoad=%v", q, as, noLoad)
+	q, as, noLoad, days, err := parseImportArgs([]string{"--days", "120", "Подтверди", "присутствие", "as", "my", "name", "--no-load"})
+	if q != "Подтверди присутствие" || as != "my name" || !noLoad || days != 120 || err != nil {
+		t.Fatalf("parseImportArgs: got q=%q as=%q noLoad=%v days=%d err=%v", q, as, noLoad, days, err)
 	}
-	if q, as, _ := parseImportArgs([]string{"as"}); q != "as" || as != "" {
-		t.Fatalf("a lone 'as' must be a query, got q=%q as=%q", q, as)
+	if q, as, _, days, err := parseImportArgs([]string{"as"}); q != "as" || as != "" || days != importDefaultDays || err != nil {
+		t.Fatalf("a lone 'as' must be a query with default depth, got q=%q as=%q days=%d err=%v", q, as, days, err)
+	}
+	if _, _, _, _, err := parseImportArgs([]string{"test", "--days=0"}); err == nil {
+		t.Fatal("zero import depth must be rejected")
 	}
 
 	if saveArgsError(nil) != "" || saveArgsError([]string{"auth-refactor"}) != "" {
@@ -477,19 +480,6 @@ func TestImportAndSaveArgs(t *testing.T) {
 		t.Fatalf("baton save <name> <#> must point to baton import ... as, got %q", msg)
 	}
 
-	candidates := []SessionCandidate{
-		{Agent: "claude", Path: "/x/0b4c9d2e-1f3a-4b5c-8d6e-7f8a9b0c1d2e.jsonl", Title: "billing-fix"},
-		{Agent: "claude", Path: "/x/1c5d0e3f-1f3a-4b5c-8d6e-7f8a9b0c1d2e.jsonl", Title: "billing-report"},
-	}
-	if _, ok := findImportCandidate(candidates, "billing"); ok {
-		t.Fatal("an ambiguous name fragment must not pick a session")
-	}
-	if c, ok := findImportCandidate(candidates, "report"); !ok || c.Title != "billing-report" {
-		t.Fatal("a unique name fragment must pick its session")
-	}
-	if c, ok := findImportCandidate(candidates, "1c5d0e3f"); !ok || c.Title != "billing-report" {
-		t.Fatal("an ID prefix must pick its session")
-	}
 }
 
 func TestRemoveSavedSession(t *testing.T) {

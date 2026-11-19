@@ -106,8 +106,11 @@ If the agent hit its limit before you saved, ask the next agent *"Use baton to l
 ```text
 baton import 1
 baton import my_session
+baton import my_session --days 120
 baton import 7 as my_session
 ```
+
+Import by name matches the full session name (case-insensitive) and picks the most recently active match. It searches the last 60 days by default. Use `--days N` to search further back, or a session ID to search all available dates.
 
 > **Tip: see the list yourself.** In Claude Code, Codex CLI, OpenCode, agy, and the Cursor CLI, type `!baton list` or `!baton import`: the `!` prefix runs the command without the model. You see the list exactly as baton printed it, and the agent spends no tokens on it. Then tell the agent *"Load session #2"*.
 
@@ -137,7 +140,7 @@ Local files that differ are kept as `.baton.bak`. baton also checks that the fol
 | `baton save [name]` | Save the current session (default name: the one it was loaded or saved as, else the folder name) and print a prompt for the next agent. In Codex, after a compaction on OpenAI's servers (its summary is encrypted), baton asks the agent for a recap and a rerun with `--summary <file>`; `baton push` waits for the recap before sending. |
 | `baton load [name\|#\|id\|URL]` | Load a session saved in baton; without arguments, the most recently saved one. |
 | `baton list [--all] [agent] [query]` | List saved sessions, newest first; `--all` adds older versions. |
-| `baton import [#\|name\|id] [as name] [--no-load]` | List recent sessions of all agents, or save one into baton and load it. |
+| `baton import [#\|name\|id] [as name] [--no-load] [--days N]` | List recent sessions or import by list number, exact name, or ID. |
 | `baton push [name]` | Encrypt and upload the session with changed files; prints a link for `baton load`. |
 | `baton rm <name\|#>` | Delete a saved session. The agent's own log is not touched. |
 | `baton clear` | Delete all saved sessions and temporary files. |

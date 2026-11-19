@@ -107,8 +107,8 @@ func TestKiroNamesImportHistoryAndCurrentSession(t *testing.T) {
 	if got := nativeResumeCommand(cands[0]); got != "kiro-cli --resume-id sess_"+id || agentLaunchCommand("kiro") != "kiro-cli" {
 		t.Fatalf("native resume: %s", got)
 	}
-	if c, ok := findImportCandidate(cands, "sess_"+id); !ok || c.Path != path {
-		t.Fatalf("full Kiro ID not found: %+v", c)
+	if c, ps, err := lookupImport("sess_"+id, importDefaultDays, time.Now()); err != nil || ps == nil || c.Path != path {
+		t.Fatalf("full Kiro ID not found: %+v, %v", c, err)
 	}
 	// These formats must not be mistaken for V3 sessions.
 	writeLines(t, filepath.Join(root, "sessions", "cli", "old.jsonl"), time.Now(), `{"kind":"Prompt","data":{}}`)

@@ -52,24 +52,30 @@ func kiroDashboardPath(path string) string {
 	return filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(path))), "dashboard-meta.json")
 }
 
-func kiroUserTitle(path string) string {
-	data, err := os.ReadFile(kiroDashboardPath(path))
-	if err != nil {
-		return ""
+type kiroDashboard map[string]struct {
+	Title string `json:"title"`
+}
+
+func readKiroDashboard(path string) kiroDashboard {
+	var entries kiroDashboard
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &entries) == nil {
+		return entries
 	}
-	var entries map[string]struct {
-		Title string `json:"title"`
-	}
-	if json.Unmarshal(data, &entries) != nil {
-		return ""
-	}
-	id := strings.TrimPrefix(filepath.Base(filepath.Dir(path)), "sess_")
+	return nil
+}
+
+func (entries kiroDashboard) title(sessionID string) string {
+	id := strings.TrimPrefix(sessionID, "sess_")
 	for _, key := range []string{"sess_" + id, id} {
 		if title := strings.TrimSpace(entries[key].Title); title != "" {
 			return title
 		}
 	}
 	return ""
+}
+
+func kiroUserTitle(path string) string {
+	return readKiroDashboard(kiroDashboardPath(path)).title(filepath.Base(filepath.Dir(path)))
 }
 
 func kiroTitle(path string, meta kiroSessionMeta) string {
@@ -81,6 +87,7 @@ func kiroTitle(path string, meta kiroSessionMeta) string {
 
 func discoverKiroSessions(root string, aliases map[string]string, query string) []SessionCandidate {
 	paths, _ := filepath.Glob(filepath.Join(root, "sessions", "*", "sess_*", "messages.jsonl"))
+	dashboard := readKiroDashboard(filepath.Join(root, "sessions", "dashboard-meta.json"))
 	var out []SessionCandidate
 	for _, path := range paths {
 		info, err := os.Stat(path)
@@ -91,15 +98,19 @@ func discoverKiroSessions(root string, aliases map[string]string, query string) 
 		if err != nil || meta.ID != filepath.Base(filepath.Dir(path)) {
 			continue
 		}
+		nativeTitle := dashboard.title(meta.ID)
+		if nativeTitle == "" {
+			nativeTitle = strings.TrimSpace(meta.Title)
+		}
 		title := aliases[path]
 		if title == "" {
-			title = kiroTitle(path, meta)
+			title = nativeTitle
 		}
 		if query != "" && !strings.Contains(strings.ToLower(meta.ID), strings.ToLower(query)) && !candidateMatchesQuery(path, title, "", query) {
 			continue
 		}
 		out = append(out, SessionCandidate{
-			Agent: "kiro", Path: path, Title: title, CWD: meta.cwd(),
+			Agent: "kiro", Path: path, Title: title, NativeTitle: nativeTitle, CWD: meta.cwd(),
 			ModTime: info.ModTime(), ID: strings.TrimPrefix(meta.ID, "sess_"),
 		})
 	}

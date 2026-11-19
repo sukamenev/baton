@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.20"
+const version = "0.3.21"
 
 func isKnownAgent(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -293,8 +293,9 @@ Usage:
                                     compaction whose summary is encrypted
   baton load [name|#|id|URL|token]  Load the latest saved session in baton, a specific saved session, or a remote URL/token
   baton list [--all]                List saved sessions in baton's local store (#1, #2, ...); --all adds older versions
-  baton import [#|name|id] [as <name>] [--no-load]
+  baton import [#|name|id] [as <name>] [--no-load] [--days N]
                                     List raw sessions of all agents, or import one into baton's store and load it
+                                    Search by name over the last %d days by default, or by ID at any age
   baton rm <name|#>                 Delete one saved session from baton's store (# as shown by baton list)
   baton clear                       Delete all locally saved sessions and temporary handoff files in baton
   baton hist <session> [N | from to | --grep text]
@@ -303,5 +304,5 @@ Usage:
   baton install                     Install SKILL.md and /baton slash command across all supported agents
   baton status                      Check skill installation status for all supported agents
   baton update                      Update baton (via go install or SHA-256 verified OS release) and refresh SKILL.md
-`, version)
+`, version, importDefaultDays)
 }

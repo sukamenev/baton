@@ -684,11 +684,41 @@ func resumeSession(args []string) (string, error) {
 		}
 		return formatHandoffSummary(parsed, handoffDir, nil) + attachCurrentSession(chainName(parsed)), nil
 	}
-	if _, ok := findImportCandidate(discoverImportCandidates(), query); ok {
-		return importSession([]string{query})
+	if c, ok := findRecentResumeCandidate(discoverImportCandidates(), query); ok {
+		ps, err := parseCandidate(c)
+		if err != nil {
+			return "", err
+		}
+		return importSelectedSession(c, ps, "", false)
 	}
 	report := formatCandidateListReport("all", query, saved)
 	return report + fmt.Sprintf("\nNo saved or agent session is named `%s`. `baton import` lists the agents' own sessions.\n", query), nil
+}
+
+// resume also accepts a unique name fragment from the recent import list.
+func findRecentResumeCandidate(candidates []SessionCandidate, query string) (SessionCandidate, bool) {
+	if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
+		return candidates[idx], true
+	}
+	for _, c := range candidates {
+		if strings.EqualFold(c.Title, query) {
+			return c, true
+		}
+	}
+	if c, ok := findCandidateByID(candidates, query); ok {
+		return c, true
+	}
+	q := strings.ToLower(query)
+	var found []SessionCandidate
+	for _, c := range candidates {
+		if strings.Contains(strings.ToLower(c.Title), q) {
+			found = append(found, c)
+		}
+	}
+	if len(found) == 1 {
+		return found[0], true
+	}
+	return SessionCandidate{}, false
 }
 
 // promoteNewestVersion gives name back to its newest older version after the

@@ -62,14 +62,15 @@ type ParsedSession struct {
 }
 
 type SessionCandidate struct {
-	Agent   string
-	Path    string
-	Title   string
-	CWD     string
-	ModTime time.Time
-	Preview string
-	ID      string // agent's own session ID; derived from Path when empty
-	Size    int    // active context size in bytes (0: unknown, not shown)
+	Agent       string
+	Path        string
+	Title       string
+	NativeTitle string // agent title when a Baton alias also exists
+	CWD         string
+	ModTime     time.Time
+	Preview     string
+	ID          string // agent's own session ID; derived from Path when empty
+	Size        int    // active context size in bytes (0: unknown, not shown)
 	// VersionOf is set on older versions of a saved session (hidden from lists).
 	VersionOf string
 }
@@ -1007,21 +1008,34 @@ func formatImportListReport(unmatchedQuery string, candidates []SessionCandidate
 	writeCandidateRows(&sb, candidates)
 	sb.WriteString("\n**How to import a session into baton and load it:**\n")
 	sb.WriteString("- By number: `baton import 1`\n")
-	sb.WriteString("- By session name: `baton import <name>`\n")
+	fmt.Fprintf(&sb, "- By session name: `baton import <name>` (last %d days; change with `--days N`)\n", importDefaultDays)
 	sb.WriteString("- By session ID: `baton import <id>`\n")
 	sb.WriteString("- Under another name: `baton import 1 as <name>`; without loading: add `--no-load`\n")
 	return sb.String()
 }
 
-// parseImportArgs splits `baton import` arguments into the session query,
-// the optional `as <name>` and the `--no-load` flag.
-func parseImportArgs(args []string) (query, asName string, noLoad bool) {
+// parseImportArgs accepts flags before or after the query and the optional
+// "as <name>" clause.
+func parseImportArgs(args []string) (query, asName string, noLoad bool, days int, err error) {
 	var q, as []string
 	inAs := false
-	for _, a := range args {
+	days = importDefaultDays
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "--no-load":
 			noLoad = true
+		case a == "--days" || strings.HasPrefix(a, "--days="):
+			value, hasValue := strings.CutPrefix(a, "--days=")
+			if !hasValue && i+1 < len(args) {
+				i++
+				value = args[i]
+			}
+			n, parseErr := strconv.ParseInt(value, 10, 32)
+			if parseErr != nil || n < 1 {
+				return "", "", false, 0, fmt.Errorf("--days requires a positive whole number")
+			}
+			days = int(n)
 		case strings.EqualFold(a, "as") && !inAs && len(q) > 0:
 			inAs = true
 		case inAs:
@@ -1030,74 +1044,46 @@ func parseImportArgs(args []string) (query, asName string, noLoad bool) {
 			q = append(q, a)
 		}
 	}
-	return strings.Join(q, " "), strings.Join(as, " "), noLoad
+	return strings.TrimSpace(strings.Join(q, " ")), strings.Join(as, " "), noLoad, days, nil
 }
 
-// findImportCandidate picks a session from the `baton import` list by number,
-// exact name, ID prefix, or a name fragment that matches only one session.
-func findImportCandidate(candidates []SessionCandidate, query string) (SessionCandidate, bool) {
-	if idx, ok := parseCandidateIndex(query, len(candidates)); ok {
-		return candidates[idx], true
-	}
-	for _, c := range candidates {
-		if c.Title != "" && strings.EqualFold(c.Title, query) {
-			return c, true
-		}
-	}
-	if c, ok := findCandidateByID(candidates, query); ok {
-		return c, true
-	}
-	qLower := strings.ToLower(query)
-	var found []SessionCandidate
-	for _, c := range candidates {
-		if c.Title != "" && strings.Contains(strings.ToLower(c.Title), qLower) {
-			found = append(found, c)
-		}
-	}
-	if len(found) == 1 {
-		return found[0], true
-	}
-	return SessionCandidate{}, false
-}
-
-// importSession implements `baton import [#|name|id] [as <name>] [--no-load]`:
-// with no query it lists raw sessions of all agents; with a number, name, or ID
-// from that list it saves the session into Baton's saved store and loads it
-// (unless --no-load is given). Unknown queries return the list, never another session.
+// importSession lists raw sessions or saves a selected session and loads it
+// (unless --no-load is given). A list number uses the same ordering as the list.
 func importSession(args []string) (string, error) {
-	cleanupOldHandoffs()
-	query, asName, noLoad := parseImportArgs(args)
-	candidates := discoverImportCandidates()
-	if query == "" || strings.EqualFold(query, "list") || query == "?" {
-		return formatImportListReport("", candidates), nil
-	}
-
-	chosen, ok := findImportCandidate(candidates, query)
-	if _, numberErr := strconv.Atoi(query); !ok && numberErr != nil {
-		// A name or ID can refer to an older session outside the numbered list.
-		// Numbers must keep referring to the exact list the user saw.
-		var matching []SessionCandidate
-		for _, c := range discoverSessions("all", query) {
-			if !isCallerOwnSession(c.Path) {
-				matching = append(matching, c)
-			}
-		}
-		var eligible []SessionCandidate
-		for i, m := range measureSessions(matching) {
-			if !m.Stub {
-				eligible = append(eligible, matching[i])
-			}
-		}
-		chosen, ok = findImportCandidate(eligible, query)
-	}
-	if !ok {
-		return formatImportListReport(query, candidates), nil
-	}
-
-	ps, err := parseCandidate(chosen)
+	query, asName, noLoad, days, err := parseImportArgs(args)
 	if err != nil {
 		return "", err
 	}
+	cleanupOldHandoffs()
+	if query == "" || strings.EqualFold(query, "list") || query == "?" {
+		return formatImportListReport("", discoverImportCandidates()), nil
+	}
+
+	var chosen SessionCandidate
+	var ps *ParsedSession
+	_, listNumber := parseCandidateIndex(query, importListLimit)
+	_, numberErr := strconv.Atoi(strings.TrimPrefix(query, "#"))
+	if listNumber || numberErr == nil && (strings.HasPrefix(query, "#") || len(query) < 4) {
+		candidates := discoverImportCandidates()
+		idx, ok := parseCandidateIndex(query, len(candidates))
+		if !ok {
+			return formatImportListReport(query, candidates), nil
+		}
+		chosen = candidates[idx]
+		ps, err = parseCandidate(chosen)
+	} else {
+		chosen, ps, err = lookupImport(query, days, time.Now())
+	}
+	if err != nil {
+		return "", err
+	}
+	if ps == nil {
+		return fmt.Sprintf("No agent session matched %q by exact name in the last %d days or by ID. Use `baton import` to list recent sessions or `--days N` to search further back.", query, days), nil
+	}
+	return importSelectedSession(chosen, ps, asName, noLoad)
+}
+
+func importSelectedSession(chosen SessionCandidate, ps *ParsedSession, asName string, noLoad bool) (string, error) {
 	if !noLoad {
 		// List numbers depend on the folder, so the retry names the session by ID.
 		retry := "baton import " + shortSessionID(chosen.SessionID())
@@ -1341,6 +1327,12 @@ func loadCodexThreadNames(codexRoot string) map[string]string {
 }
 
 func discoverSessions(agent, query string) []SessionCandidate {
+	return collectSessions(agent, query, loadAliases(), false)
+}
+
+// metadataOnly is used by targeted import. The lookup handles sorting and
+// reads titles stored in transcripts only as it reaches each week's sessions.
+func collectSessions(agent, query string, aliases map[string]string, metadataOnly bool) []SessionCandidate {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
 	agent = strings.ToLower(strings.TrimSpace(agent))
@@ -1348,7 +1340,6 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		agent = "all"
 	}
 
-	aliases := loadAliases()
 	var codexTitles map[string]string
 	if agent == "all" || agent == "codex" {
 		codexTitles = loadCodexThreadNames(codexBaseDir(home))
@@ -1393,11 +1384,12 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		}
 		seen[path] = true
 		all = append(all, SessionCandidate{
-			Agent:   ag,
-			Path:    path,
-			Title:   title,
-			CWD:     defaultCWD,
-			ModTime: info.ModTime(),
+			Agent:       ag,
+			Path:        path,
+			Title:       title,
+			NativeTitle: defaultTitle,
+			CWD:         defaultCWD,
+			ModTime:     info.ModTime(),
 		})
 	}
 
@@ -1420,14 +1412,7 @@ func discoverSessions(agent, query string) []SessionCandidate {
 		codexRoot := filepath.Join(codexBaseDir(home), "sessions")
 		_ = filepath.WalkDir(codexRoot, func(path string, d fs.DirEntry, err error) error {
 			if err == nil && !d.IsDir() && strings.HasSuffix(path, ".jsonl") {
-				t := ""
-				for id, name := range codexTitles {
-					if strings.Contains(filepath.Base(path), id) {
-						t = name
-						break
-					}
-				}
-				addFile("codex", path, t, "")
+				addFile("codex", path, codexTitles[agentSessionID(filepath.Base(path))], "")
 			}
 			return nil
 		})
@@ -1507,7 +1492,7 @@ func discoverSessions(agent, query string) []SessionCandidate {
 	}
 
 	if agent == "all" || agent == "opencode" {
-		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), aliases, query)...)
+		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), aliases, query, metadataOnly)...)
 	}
 
 	if agent == "all" || agent == "kimi" {
@@ -1518,8 +1503,9 @@ func discoverSessions(agent, query string) []SessionCandidate {
 	}
 
 	// Include sessions imported from remote URLs via `baton load <URL>`
-	importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
-	if importFiles, err := filepath.Glob(filepath.Join(importDir, "*.baton.json")); err == nil {
+	if agent == "all" || agent == "imported" || !metadataOnly {
+		importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
+		importFiles, _ := filepath.Glob(filepath.Join(importDir, "*.baton.json"))
 		for _, m := range importFiles {
 			ag := "imported"
 			base := filepath.Base(m)
@@ -1529,12 +1515,15 @@ func discoverSessions(agent, query string) []SessionCandidate {
 					break
 				}
 			}
-			if agent == "all" || agent == ag {
+			if agent == "all" || agent == ag || agent == "imported" {
 				addFile(ag, m, aliases[m], "")
 			}
 		}
 	}
 
+	if metadataOnly {
+		return all
+	}
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].ModTime.After(all[j].ModTime)
 	})
@@ -1616,8 +1605,9 @@ const opencodeV1SessionsSQL = `SELECT s.id, s.title, s.directory, s.time_updated
         FROM session s WHERE s.parent_id IS NULL AND s.time_archived IS NULL
         ORDER BY s.time_updated DESC LIMIT 50;`
 
-// discoverOpenCodeSessions lists top-level OpenCode sessions with the last user prompt as preview.
-func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query string) []SessionCandidate {
+// discoverOpenCodeSessions lists top-level sessions. Targeted import reads the
+// full session catalog, leaving out the message queries used for list previews.
+func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query string, metadataOnly bool) []SessionCandidate {
 	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
 		return nil
 	}
@@ -1628,9 +1618,18 @@ func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query st
 		Updated int64  `json:"time_updated"`
 		Prompt  string `json:"prompt"`
 	}
+	v2 := opencodeHasV2(dbPath)
 	sessionsSQL := opencodeSessionsSQL
-	if !opencodeHasV2(dbPath) {
+	if !v2 {
 		sessionsSQL = opencodeV1SessionsSQL // Deprecated: remove after 2027-04-01
+	}
+	if metadataOnly {
+		table := "session"
+		if v2 {
+			table = "session_v2"
+		}
+		sessionsSQL = "SELECT id, title, directory, time_updated FROM " + table +
+			" WHERE parent_id IS NULL AND time_archived IS NULL;"
 	}
 	if err := opencodeSQL(dbPath, sessionsSQL, &rows); err != nil {
 		return nil
@@ -1650,12 +1649,13 @@ func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query st
 			continue
 		}
 		out = append(out, SessionCandidate{
-			Agent:   "opencode",
-			Path:    virtualPath,
-			Title:   title,
-			CWD:     r.CWD,
-			ModTime: time.UnixMilli(r.Updated),
-			Preview: preview,
+			Agent:       "opencode",
+			Path:        virtualPath,
+			Title:       title,
+			NativeTitle: r.Title,
+			CWD:         r.CWD,
+			ModTime:     time.UnixMilli(r.Updated),
+			Preview:     preview,
 		})
 	}
 	return out

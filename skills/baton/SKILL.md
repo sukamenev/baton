@@ -39,6 +39,8 @@ The user may write in any language. The phrases in the table below are English e
 | "Save/name session #7 as my_session" (a session other than the current one) | `baton import 7 as my_session` |
 | "Import session #3 as my_session without loading it" | `baton import 3 as my_session --no-load` |
 
+Import by name uses the full session name and searches the last 60 days by default. Use `baton import my_session --days 120` for a deeper search. Session IDs work regardless of age.
+
 `baton save` works only with the current session. Never pass it a number or another session; use `baton import <#|id> as <name>` instead.
 
 Note for Codex CLI: if a remote `baton load <URL>` or `baton push` fails due to sandbox network restrictions and permission escalation is rejected by policy, tell the user to run `!baton load "<URL>"` (or `!baton push`) directly in the Codex prompt with a leading exclamation mark `!`, and then type `baton load`.
