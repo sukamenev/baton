@@ -85,9 +85,9 @@ Talk to your agent in plain words and mention baton, or run `baton` commands dir
 `baton resume my_session` finds the latest point of the session, wherever it is:
 
 - the copy saved in baton, if nothing happened after it;
-- an agent session that went on after it, even without `baton save`. If that session belongs to the agent you are in, baton tells you how to resume it natively there (for example `/resume <id>` in Claude Code), with no loss at all. Otherwise it imports that session and loads it.
+- an agent session with the same current name where work continued, even without `baton save`. If that session belongs to the agent you are in, baton shows its native resume command (for example `/resume <id>` in Claude Code). Otherwise it imports that session and loads it.
 
-A session loaded through baton keeps the name: Claude Code and Codex show it in their own `/resume` menus, and a later `baton save` without a name saves it under the same name. The session saved under that name before is kept as `my_session.2026-11-09_14-30` (`baton list --all` shows such older versions; the 3 newest are kept).
+On load, baton can name the receiving session in Claude Code, Codex, and Kiro. Where a manual rename is needed, baton shows how to do it in the agent. A later `baton save` or `baton push` without a name uses the agent's current title. If you rename the session, use its new name to resume that conversation. A previous snapshot under the same name is kept as an older version when another session takes its place.
 
 Kiro CLI V3 reads the same skill from `~/.kiro/skills/baton/` (installed by `baton install`). Rename a session inside Kiro with `/sessions rename my_session`, then use `baton import my_session` in another agent. baton recognizes Kiro's user-set titles, preserves them on load, and uses `kiro-cli --resume-id <id>` for native continuation. V2 and SQLite session stores are not supported.
 
@@ -110,7 +110,7 @@ baton import my_session --days 120
 baton import 7 as my_session
 ```
 
-Import by name matches the full session name (case-insensitive) and picks the most recently active match. It searches the last 60 days by default. Use `--days N` to search further back, or a session ID to search all available dates.
+Import by name matches the agent's current session name in full, ignoring case, and picks the most recently active match. It searches the last 60 days by default. Use `--days N` to search further back, or a session ID to search all available dates.
 
 > **Tip: see the list yourself.** In Claude Code, Codex CLI, OpenCode, agy, and the Cursor CLI, type `!baton list` or `!baton import`: the `!` prefix runs the command without the model. You see the list exactly as baton printed it, and the agent spends no tokens on it. Then tell the agent *"Load session #2"*.
 
@@ -137,7 +137,7 @@ Local files that differ are kept as `.baton.bak`. baton also checks that the fol
 | Command | Description |
 |---|---|
 | `baton resume <name\|#>` | Continue a session from its latest point in any agent (`--load` always loads it here). |
-| `baton save [name]` | Save the current session (default name: the one it was loaded or saved as, else the folder name) and print a prompt for the next agent. In Codex, after a compaction on OpenAI's servers (its summary is encrypted), baton asks the agent for a recap and a rerun with `--summary <file>`; `baton push` waits for the recap before sending. |
+| `baton save [name]` | Save the current session under its agent title or folder name by default and print a prompt for the next agent. After encrypted Codex compaction, baton asks for a recap and a rerun with `--summary <file>`. `baton push` waits for the recap before sending. |
 | `baton load [name\|#\|id\|URL]` | Load a session saved in baton; without arguments, the most recently saved one. |
 | `baton list [--all] [agent] [query]` | List saved sessions, newest first; `--all` adds older versions. |
 | `baton import [#\|name\|id] [as name] [--no-load] [--days N]` | List recent sessions or import by list number, exact name, or ID. |

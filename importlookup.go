@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
@@ -33,7 +32,6 @@ type importAgentSearch struct {
 // between requests. Closing the request channels stops all workers.
 func startImportSearch(query string) ([]importAgentSearch, func()) {
 	agents := []string{"claude", "codex", "agy", "pi", "opencode", "cursor", "kimi", "kiro", "imported"}
-	aliases := loadAliases()
 	workers := make([]importAgentSearch, 0, len(agents))
 	var wg sync.WaitGroup
 	for _, agent := range agents {
@@ -42,7 +40,7 @@ func startImportSearch(query string) ([]importAgentSearch, func()) {
 		wg.Add(1)
 		go func(agent string, w importAgentSearch) {
 			defer wg.Done()
-			searchImportAgent(agent, w, aliases, query)
+			searchImportAgent(agent, w, query)
 		}(agent, w)
 	}
 	return workers, func() {
@@ -53,8 +51,8 @@ func startImportSearch(query string) ([]importAgentSearch, func()) {
 	}
 }
 
-func searchImportAgent(agent string, w importAgentSearch, aliases map[string]string, query string) {
-	candidates := collectSessions(agent, "", aliases, true)
+func searchImportAgent(agent string, w importAgentSearch, query string) {
+	candidates := collectSessions(agent, "", true)
 	pending := candidates[:0]
 	for _, c := range candidates {
 		if !isCallerOwnSession(c.Path) {
@@ -81,13 +79,11 @@ func searchImportAgent(agent string, w importAgentSearch, aliases map[string]str
 		for len(pending) > 0 && !pending[0].ModTime.Before(since) {
 			c := pending[0]
 			pending = pending[1:]
-			if strings.HasSuffix(c.Path, ".baton.json") || c.Agent == "claude" || c.Agent == "pi" {
-				c.NativeTitle = readImportTitle(c)
-				if c.Title == "" {
-					c.Title = c.NativeTitle
-				}
+			if strings.HasSuffix(c.Path, ".baton.json") {
+				continue // saved titles are addressed through baton load
 			}
-			if strings.EqualFold(c.Title, query) || strings.EqualFold(c.NativeTitle, query) {
+			c.Title = currentSessionTitle(c)
+			if strings.EqualFold(c.Title, query) {
 				matches = append(matches, c)
 			}
 		}
@@ -161,6 +157,9 @@ func lookupImport(query string, days int, now time.Time) (SessionCandidate, *Par
 }
 
 func parseImportMatch(c SessionCandidate) (*ParsedSession, error) {
+	if !strings.HasSuffix(c.Path, ".baton.json") && c.Title == "" {
+		c.Title = currentSessionTitle(c)
+	}
 	ps, err := parseCandidate(c)
 	if err == nil && (isHandoffStubSession(ps) || len(ps.AllTurns) == 0 && strings.TrimSpace(ps.CompactSummary) == "") {
 		return nil, nil
@@ -168,90 +167,80 @@ func parseImportMatch(c SessionCandidate) (*ParsedSession, error) {
 	return ps, err
 }
 
-func readImportTitle(c SessionCandidate) string {
-	f, err := os.Open(c.Path)
+func currentSessionTitle(c SessionCandidate) string {
+	switch c.Agent {
+	case "claude":
+		return lastJSONLField(c.Path, "custom-title", "customTitle")
+	case "pi":
+		return lastJSONLField(c.Path, "session_info", "name")
+	default:
+		return strings.TrimSpace(c.Title)
+	}
+}
+
+// Read backwards so a recently appended rename wins, even if it is buried
+// within a long transcript. Keep at most one chunk of a split row and skip
+// large message/tool rows without buffering them.
+func lastJSONLField(path, kind, field string) string {
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
-	if strings.HasSuffix(c.Path, ".baton.json") {
-		return readSnapshotTitle(io.LimitReader(f, importTitleWindow))
-	}
-
 	info, err := f.Stat()
 	if err != nil {
 		return ""
 	}
-	marker := []byte(`"customTitle"`)
-	if c.Agent == "pi" {
-		marker = []byte(`"session_info"`)
-	}
-	titleIn := func(start, length int64) string {
-		data, _ := io.ReadAll(io.NewSectionReader(f, start, length))
-		if start > 0 {
-			// Start one byte before the window, then discard the partial row.
-			_, data, _ = bytes.Cut(data, []byte("\n"))
-		}
-		var title string
-		for len(data) > 0 {
-			var line []byte
-			line, data, _ = bytes.Cut(data, []byte("\n"))
-			if !bytes.Contains(line, marker) {
-				continue
-			}
-			var row struct {
-				Type        string `json:"type"`
-				Name        string `json:"name"`
-				CustomTitle string `json:"customTitle"`
-			}
-			if json.Unmarshal(line, &row) != nil {
-				continue
-			}
-			value := row.CustomTitle
-			if c.Agent == "pi" {
-				if row.Type != "session_info" {
-					continue
-				}
-				value = row.Name
-			}
-			if value = strings.TrimSpace(value); value != "" {
-				title = value
-			}
-		}
-		return title
-	}
-	if size := info.Size(); size > 2*importTitleWindow {
-		if title := titleIn(size-importTitleWindow-1, importTitleWindow+1); title != "" {
-			return title
-		}
-		return titleIn(0, importTitleWindow)
-	}
-	return titleIn(0, info.Size())
-}
 
-// Baton writes the snapshot title before the turn arrays. Stop at the arrays
-// even for old snapshots without a title.
-func readSnapshotTitle(r io.Reader) string {
-	d := json.NewDecoder(r)
-	if token, err := d.Token(); err != nil || token != json.Delim('{') {
-		return ""
+	chunk := int(min(info.Size(), importTitleWindow))
+	buffer := make([]byte, 2*chunk)
+	marker := []byte(`"` + kind + `"`)
+	titleInRow := func(line []byte) string {
+		if !bytes.Contains(line, marker) {
+			return ""
+		}
+		var row map[string]json.RawMessage
+		if json.Unmarshal(line, &row) != nil {
+			return ""
+		}
+		var typ, title string
+		if json.Unmarshal(row["type"], &typ) != nil || typ != kind || json.Unmarshal(row[field], &title) != nil {
+			return ""
+		}
+		return strings.TrimSpace(title)
 	}
-	for d.More() {
-		key, err := d.Token()
-		if err != nil || key == "all_turns" || key == "post_compact" {
-			break
+
+	carry := 0
+	discard := false
+	for end := info.Size(); end > 0; {
+		n := int(min(end, int64(chunk)))
+		start := end - int64(n)
+		if _, err := f.ReadAt(buffer[chunk-n:chunk], start); err != nil {
+			return ""
 		}
-		if key == "title" {
-			var title string
-			if d.Decode(&title) == nil {
-				return strings.TrimSpace(title)
+		data := buffer[chunk-n : chunk+carry]
+		for {
+			i := bytes.LastIndexByte(data, '\n')
+			if i < 0 {
+				break
 			}
-			break
+			if !discard {
+				if title := titleInRow(data[i+1:]); title != "" {
+					return title
+				}
+			}
+			discard = false
+			data = data[:i]
 		}
-		var value json.RawMessage
-		if d.Decode(&value) != nil {
-			break
+		if start == 0 && !discard {
+			return titleInRow(data)
 		}
+		discard = discard || len(data) > chunk
+		carry = 0
+		if !discard {
+			carry = copy(buffer[chunk:], data)
+		}
+		end = start
 	}
 	return ""
 }

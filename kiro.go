@@ -85,7 +85,7 @@ func kiroTitle(path string, meta kiroSessionMeta) string {
 	return strings.TrimSpace(meta.Title)
 }
 
-func discoverKiroSessions(root string, aliases map[string]string, query string) []SessionCandidate {
+func discoverKiroSessions(root, query string) []SessionCandidate {
 	paths, _ := filepath.Glob(filepath.Join(root, "sessions", "*", "sess_*", "messages.jsonl"))
 	dashboard := readKiroDashboard(filepath.Join(root, "sessions", "dashboard-meta.json"))
 	var out []SessionCandidate
@@ -98,19 +98,15 @@ func discoverKiroSessions(root string, aliases map[string]string, query string) 
 		if err != nil || meta.ID != filepath.Base(filepath.Dir(path)) {
 			continue
 		}
-		nativeTitle := dashboard.title(meta.ID)
-		if nativeTitle == "" {
-			nativeTitle = strings.TrimSpace(meta.Title)
-		}
-		title := aliases[path]
+		title := dashboard.title(meta.ID)
 		if title == "" {
-			title = nativeTitle
+			title = strings.TrimSpace(meta.Title)
 		}
 		if query != "" && !strings.Contains(strings.ToLower(meta.ID), strings.ToLower(query)) && !candidateMatchesQuery(path, title, "", query) {
 			continue
 		}
 		out = append(out, SessionCandidate{
-			Agent: "kiro", Path: path, Title: title, NativeTitle: nativeTitle, CWD: meta.cwd(),
+			Agent: "kiro", Path: path, Title: title, CWD: meta.cwd(),
 			ModTime: info.ModTime(), ID: strings.TrimPrefix(meta.ID, "sess_"),
 		})
 	}
@@ -246,7 +242,7 @@ func parseKiroSession(path string, ps *ParsedSession) error {
 // renameKiroSession writes only the dashboard's user-title override, never the
 // live session.json. Use Kiro's directory lock and owner format so its client
 // and baton cannot overwrite each other's bookmarks, tags, or titles.
-func renameKiroSession(path, name, prevName string) bool {
+func renameKiroSession(path, name string) bool {
 	dashboard := kiroDashboardPath(path)
 	root := filepath.Dir(dashboard)
 	tmpLock, err := os.MkdirTemp(root, ".baton-title-lock-")
@@ -277,7 +273,7 @@ func renameKiroSession(path, name, prevName string) bool {
 	for _, key := range []string{"sess_" + id, id} {
 		var current string
 		_ = json.Unmarshal(entries[key]["title"], &current)
-		if current != "" && current != prevName && !strings.EqualFold(current, name) {
+		if current != "" && !strings.EqualFold(current, name) {
 			return false // keep the user's own rename
 		}
 	}

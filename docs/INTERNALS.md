@@ -81,7 +81,7 @@ Bare `baton …` commands are skipped as well. If only commands follow the lates
 
 - **Size:** the active context that `baton load` would hand over, measured in baton's own normalized text. It is comparable across agents and survives transfers between agents and machines.
 - **Import cache:** The numbered list measures the active context of recent sessions and caches the results in `/tmp/baton-<uid>/cache/`. Sessions without messages and `baton load` stubs are hidden.
-- **Import by name:** A worker per agent enumerates sessions once and advances through their metadata in weekly batches. The coordinator picks the newest exact match from the first matching week. The default depth is 60 days, adjustable with `--days N`. For agents with inline titles (Claude and Pi), discovery inspects up to 256 KiB from each end of the transcript. Use the ID if a rename record lies outside those windows. ID lookup has no date cutoff.
+- **Import by name** uses current agent titles. A worker per agent enumerates sessions once and advances through their metadata in weekly batches. The coordinator picks the newest exact match from the first matching week. The default depth is 60 days and `--days N` changes it. For inline titles in Claude and Pi, discovery reads the transcript backwards in bounded chunks until it finds the last title. ID lookup has no date cutoff.
 - **ID:** the first 8 characters of the agent's own session ID; the same in `baton list` and `baton import`. List numbers shift as new sessions appear, IDs don't, so scripts should use `baton load <id>` and `baton import <id>`.
 - **Name collisions:** a name always holds the latest point of the work. `baton save name` (also `push`, `resume`, `import … as name`) from a different session moves the session saved under it to `name.<date>` (for example `my_session.2026-11-09_14-30`, the time it was saved) and takes the name. Older versions have no list numbers: `baton list --all` shows them, `baton load <version name>` loads one, and only the 3 newest are kept. `baton rm name` gives the name back to the newest older version. Only `baton import` without `as` (the name is the agent's own title, which unrelated sessions often share) uses suffixes: `name-2`, `name-3`, …
 
@@ -89,14 +89,9 @@ Bare `baton …` commands are skipped as well. If only commands follow the lates
 
 A saved snapshot (`~/.config/baton/saved/<name>.baton.json`) is JSON. It records `format` (the snapshot format, now 1) and `saved_by` (the baton version that wrote it). New optional fields keep the format: older batons ignore fields they don't know. The format goes up only when an existing field changes meaning; a baton that meets a newer format asks for `baton update` instead of misreading the snapshot. Remote bundles carry the same fields.
 
-## Links between agent sessions and names (`baton resume`)
+## How `baton resume` finds the latest point
 
-`~/.config/baton/links.json` records which agent session holds a point of which name, and how many prompts the user had typed in it at that moment:
-
-- `baton save` links the saved session to its name;
-- `baton load`, `baton resume`, and `baton import` link the session they load into (the one running baton) to the loaded name.
-
-`baton resume name` compares the saved copy with every agent session linked to the name or named so in the agent. A linked session counts as a newer point if the number of typed prompts changed since it was linked and it was written after the saved copy. The newest point wins:
+`baton resume name` compares a saved snapshot with agent sessions that currently have that name. A newer session with user work after the handoff can be resumed without another `baton save`. Renaming an agent session changes its search name immediately. A saved snapshot also records its source ID, source title, and prompt count so baton can offer native continuation when the source still holds the saved point. Older snapshots use the source modification time to check for activity.
 
 - the saved copy: it is loaded;
 - a session of the agent running baton (or baton runs in a terminal): baton prints the agent's native resume command, because a native resume loses nothing: `claude --resume <id>` (or `/resume <id>` inside Claude Code), `codex resume <id>`, `agy --conversation <id>`, `kimi --session session_<id>`, `opencode --session ses_<id>`, `agent --resume <id>` (Cursor), `pi --session <id>`;
@@ -112,11 +107,9 @@ A saved snapshot (`~/.config/baton/saved/<name>.baton.json`) is JSON. It records
 
 Only the model can read the encrypted summary, and only baton knows for sure that the summary is encrypted, so baton asks for a recap exactly when it is needed. When `baton save` runs in such a Codex session without `--summary`, it saves the stand-in and its output asks the agent to write a detailed recap of the session into a file and to rerun `baton save <name> --summary <file>`; the recap then replaces the stand-in. `baton push` sends nothing without the recap and asks for it the same way, so only one link goes out. A recap for a session without an encrypted compaction is not used. Each recap is written anew from the agent's current context (the request asks to carry over the facts of an earlier recap), and the snapshot keeps the latest one only. A Codex session imported or resumed from another agent cannot be asked and keeps the stand-in.
 
-**Naming the session in the agent.** After a load, baton names the session it loaded into, so the agent's own resume menu shows the name instead of an automatic title. It writes the record the agent itself writes on rename, only where logs are append-only: a `custom-title` row in the Claude Code transcript (a name the user set with `/rename` is kept) and a `thread_name` row in Codex's `session_index.jsonl`. Other agents keep their own titles for now.
+**Naming the receiving session.** Baton can name a verified receiving session in Claude Code, Codex, or Kiro while preserving existing user titles. Codex stores automatic and manual titles in the same form, so baton suggests `/rename` when there is already a different title. When automatic naming is unavailable, baton prints the agent's manual rename command or menu action.
 
-**Names set in the agent.** `baton resume` and the `baton import` list show sessions under the names agents give them: Claude Code's `custom-title` rows, Codex's `session_index.jsonl`, Pi's `session_info`, Kimi's `state.json`, and agy's titles. agy keeps every conversation's title in `annotations/<uuid>.pbtxt` (the title its own `/resume` menu shows), where the user's names and titles agy makes up itself look the same; only its prompt history (`history.jsonl`) records the user's `/rename <name>` commands. `baton save` without a name takes only a name the user set: Claude Code's `/rename`, Pi's and Kimi's session names, and agy's `/rename`.
-
-**`baton save` without a name** uses the name the session is linked to, then a name the user gave it in the agent (Claude Code `/rename`, Pi, Kimi), then the folder name.
+**Default names.** `baton save` and `baton push` use the agent's current title if available, then the workspace folder.
 
 ## Which session `baton save` picks
 
@@ -140,7 +133,7 @@ For sandbox settings and security reviews. An environment variable in parenthese
 | `~/.cursor/projects/`, `~/.cursor/chats/` (`CURSOR_HOME`) | read | same |
 | `~/.kimi-code/sessions/` (`KIMI_CODE_HOME`) | read | same |
 | `~/.kiro/sessions/` (`KIRO_HOME`) | read; writes a user title to `dashboard-meta.json` under Kiro's lock | same |
-| `~/.config/baton/` (`BATON_CONFIG_DIR`): `saved/`, `imported/`, `aliases.json`, `links.json` | read and write | the store: `save`, `load`, `list`, `resume`, `import`, `rm`, `clear` |
+| `~/.config/baton/` (`BATON_CONFIG_DIR`): `saved/`, `imported/`, `aliases.json` | read and write | the store for `save`, `load`, `list`, `resume`, `import`, `rm`, and `clear` |
 | `/tmp/baton-<uid>/` (`%TEMP%\baton\` on Windows): `handoff/`, `cache/` | read and write | handoff files for the next agent, the import cache, update checks |
 | the current folder | read; `load <URL>` writes restored files and `.baton.bak` backups | `push` (changed files, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.agents/rules/*.md`), `load <URL>` |
 | `~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md` | read | `push` (global rule files) |

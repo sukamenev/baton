@@ -27,7 +27,7 @@ The user may write in any language. The phrases in the table below are English e
 | "Show recent/saved sessions" (or the user forgot the name) | `baton list` |
 | "Load session #1" / "Load the first session" | `baton load 1` |
 | "Load session 726d401d" (a session ID from the list) | `baton load 726d401d` |
-| "Save/name this session" | `baton save` (keeps the name the session was loaded or saved as) |
+| "Save/name this session" | `baton save` (uses the agent's current session name, or the workspace folder) |
 | "Save this session as my_session" | `baton save my_session` |
 | "Push/send this session to my laptop" | `baton push` |
 | "Load remote session https://...#key or baton:..." | `baton load <URL\|token>` |
@@ -39,7 +39,7 @@ The user may write in any language. The phrases in the table below are English e
 | "Save/name session #7 as my_session" (a session other than the current one) | `baton import 7 as my_session` |
 | "Import session #3 as my_session without loading it" | `baton import 3 as my_session --no-load` |
 
-Import by name uses the full session name and searches the last 60 days by default. Use `baton import my_session --days 120` for a deeper search. Session IDs work regardless of age.
+Import by name uses the agent's current full session name and searches the last 60 days by default. Use `baton import my_session --days 120` for a deeper search. Session IDs work regardless of age. Use `baton load <name>` for saved snapshots.
 
 `baton save` works only with the current session. Never pass it a number or another session; use `baton import <#|id> as <name>` instead.
 
@@ -51,7 +51,7 @@ In Cursor (IDE agent and `agent` CLI), use the installed Baton skill to run the 
 
 In Kiro CLI V3, use the installed Baton skill from `~/.kiro/skills/baton/` (`$KIRO_HOME` is honored) to run the same commands. Kiro's `/sessions rename <name>` sets the session name that `baton import <name>` and `baton save` recognize. A steering file does not rename a session. Only the V3 session format is supported; V2 and SQLite sessions are not read.
 
-`baton resume <name>` continues a session from its latest point: the copy saved in baton or an agent session that went on after it. If its output says to continue the session natively, do not load anything: show the user the commands from the output exactly as printed and stop. Run `baton resume <name> --load` only if the user asks to load it into this conversation anyway.
+`baton resume <name>` continues a session from its latest point, either the saved copy or an agent session with that current name where work continued. If its output says to continue the session natively, show the user the commands exactly as printed and stop. Run `baton resume <name> --load` only if the user asks to load it into this conversation anyway.
 
 `baton load`, `baton resume`, and `baton import` refuse to load a session that worked in another folder that exists on this machine (you cannot change your own working folder). Then show the user baton's message, including its `cd … && <agent>` command, and ask whether they will restart the agent in that folder (recommended) or want to load the session here anyway. Rerun the same command with `--force` only if the user chooses to load it here.
 
@@ -74,5 +74,6 @@ In Codex, `baton save` or `baton push` may ask for a recap: the session was comp
 2. **Check `Handoff Status` at the bottom of the output of `baton load` (and of `baton resume` or `baton import` when they loaded a session):**
    - If it says `Handoff Status: PARTIAL`, read **every file** listed under `Remaining Active Context Files` in numerical order (`part1`, `part2`, ...), issuing a **separate top-level tool call for each individual file** (never combine multiple part files into a single `cat`/shell command or a single `functions.exec` script, omit `StartLine`/`EndLine` so each part file is read in full without truncation, and in Codex `functions.exec` start the script with `// @exec: {"max_output_tokens": 50000}`) before replying to the user.
    - Once all part files are loaded (`Handoff Status: COMPLETE` or after reading all `Remaining Active Context Files`), review the modified files, recent shell commands, the latest compaction checkpoint (`/compact`), and post-compaction dialogue turns.
+   - If baton prints a manual rename hint after loading, show it to the user as a suggestion.
    - If you later need turns from before the latest compaction or the full output of a shortened tool result (`[collapsed …]`), use `baton hist <Session ID>` (the Session ID is printed at the top of the load output): without more arguments it lists the user's prompts by turn number; `baton hist <Session ID> <N>` prints turn N in full, `baton hist <Session ID> <from> <to>` prints a range, and `baton hist <Session ID> --grep <text>` finds turns. Run it only when you need it.
    - Do NOT run extra shell commands (such as `go test`, `git status`, or `ls`) after loading a session (`baton load`, `baton resume`, `baton import`) unless the user's message explicitly included a new task alongside the load. Briefly confirm the last step reached by the previous agent and ask how the user would like to proceed (or continue if they already specified the next step).

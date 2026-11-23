@@ -91,7 +91,7 @@ func TestKimiAutoTitleIsNotAName(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BATON_CONFIG_DIR", t.TempDir())
-	cands := discoverKimiSessions(root, map[string]string{}, "")
+	cands := discoverKimiSessions(root, "")
 	if len(cands) != 1 || cands[0].Title != "" || cands[0].Preview != "Run the tests" || cands[0].CWD != "/work/proj" {
 		t.Fatalf("unexpected candidate: %+v", cands)
 	}

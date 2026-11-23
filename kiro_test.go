@@ -150,7 +150,7 @@ func TestKiroNamesImportHistoryAndCurrentSession(t *testing.T) {
 		t.Fatal("Kiro's current session not recognized")
 	}
 	ps, err = parseCurrentSession()
-	if err != nil || ps.SourceFile != path || userSessionName("kiro", path) != "Named Kiro Session" || defaultSaveName(ps) != "kiro-loaded" {
+	if err != nil || ps.SourceFile != path || userSessionName("kiro", path) != "Named Kiro Session" || defaultSaveName(ps) != "Named Kiro Session" {
 		t.Fatalf("current session/save name: %v %+v", err, ps)
 	}
 	t.Setenv("KIRO_SESSION_ID", "sess_missing")
@@ -168,7 +168,7 @@ func TestKiroRenamePreservesMetadataAndLocks(t *testing.T) {
 	before, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "session.json"))
 	writeLines(t, dashboard, time.Now(), `{"`+id+`":{"bookmarked":true,"tags":["keep"],"unknown":42},"other":{"title":"Other session"}}`)
 	c := SessionCandidate{Agent: "kiro", Path: path}
-	if note := renameAgentSession(c, "loaded-name", ""); !strings.Contains(note, "loaded-name") || kiroUserTitle(path) != "loaded-name" {
+	if note, _ := renameAgentSession(c, "loaded-name"); !strings.Contains(note, "loaded-name") || kiroUserTitle(path) != "loaded-name" {
 		t.Fatalf("rename failed: %s", note)
 	}
 	data, _ := os.ReadFile(dashboard)
@@ -181,14 +181,14 @@ func TestKiroRenamePreservesMetadataAndLocks(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("rename must not write the live session metadata")
 	}
-	if renameKiroSession(path, "overwrite-user-name", "") || !renameKiroSession(path, "new-loaded-name", "loaded-name") {
-		t.Fatal("user titles must be kept; a previous Baton title may be replaced")
+	if renameKiroSession(path, "overwrite-user-name") {
+		t.Fatal("existing titles must be kept")
 	}
 	if err := os.Mkdir(dashboard+".lock", 0700); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(dashboard)
-	if renameKiroSession(path, "locked", "new-loaded-name") {
+	if renameKiroSession(path, "loaded-name") {
 		t.Fatal("must respect Kiro's active metadata lock")
 	}
 	after, _ = os.ReadFile(dashboard)

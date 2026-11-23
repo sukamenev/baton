@@ -33,11 +33,15 @@ type SessionTurn struct {
 }
 
 type ParsedSession struct {
-	Agent           string        `json:"agent"`
-	SessionID       string        `json:"session_id"`
-	Title           string        `json:"title,omitempty"`
-	CWD             string        `json:"cwd,omitempty"`
-	SourceFile      string        `json:"source_file"`
+	Agent      string `json:"agent"`
+	SessionID  string `json:"session_id"`
+	Title      string `json:"title,omitempty"`
+	CWD        string `json:"cwd,omitempty"`
+	SourceFile string `json:"source_file"`
+	// Keep the agent title and prompt count separately from the saved name and
+	// truncated transcript, so native resume can recognize the saved point.
+	SourceTitle     string        `json:"source_title,omitempty"`
+	SourcePrompts   *int          `json:"source_prompts,omitempty"`
 	ModTime         time.Time     `json:"mod_time"`
 	PreCompactTurns int           `json:"pre_compact_turns"`
 	CompactSummary  string        `json:"compact_summary,omitempty"`
@@ -62,15 +66,14 @@ type ParsedSession struct {
 }
 
 type SessionCandidate struct {
-	Agent       string
-	Path        string
-	Title       string
-	NativeTitle string // agent title when a Baton alias also exists
-	CWD         string
-	ModTime     time.Time
-	Preview     string
-	ID          string // agent's own session ID; derived from Path when empty
-	Size        int    // active context size in bytes (0: unknown, not shown)
+	Agent   string
+	Path    string
+	Title   string
+	CWD     string
+	ModTime time.Time
+	Preview string
+	ID      string // agent's own session ID; derived from Path when empty
+	Size    int    // active context size in bytes (0: unknown, not shown)
 	// VersionOf is set on older versions of a saved session (hidden from lists).
 	VersionOf string
 }
@@ -386,6 +389,11 @@ func saveSessionToBatonStoreMode(ps *ParsedSession, name string, replace bool) (
 	}
 
 	cp := *ps
+	if ps.Format == 0 && ps.SourceFile != "" {
+		prompts := countTypedPrompts(ps.AllTurns)
+		cp.SourcePrompts = &prompts
+		cp.SourceTitle = ps.Title
+	}
 	cp.Title = name
 	cp.VersionOf = ""
 	cp.ModTime = time.Now()
@@ -409,11 +417,7 @@ func saveSessionToBatonStoreMode(ps *ParsedSession, name string, replace bool) (
 	}
 	aliases := loadAliases()
 	aliases[savePath] = name
-	if ps.SourceFile != "" {
-		aliases[ps.SourceFile] = name
-	}
 	_ = saveAliases(aliases)
-	linkSavedOrigin(ps, name)
 	return savePath, name, nil
 }
 
@@ -431,6 +435,7 @@ func clearSavedSessions() (string, error) {
 		_ = os.RemoveAll(dir)
 	}
 	_ = os.Remove(aliasesFilePath())
+	_ = os.Remove(filepath.Join(batonConfigDir(), "links.json"))
 	_ = os.RemoveAll(handoffBaseDir())
 	return fmt.Sprintf("Cleared all locally saved Baton sessions (%d saved session(s) removed).", removed), nil
 }
@@ -706,8 +711,7 @@ func cwdMatches(sessionCWD, currentCWD string) bool {
 }
 
 // isHandoffStubSession returns true if a session was started as a handoff-receiver
-// session (its first user prompt asks to load/list a baton session) and has not
-// modified any workspace files yet.
+// session and has no user work after the initial handoff request.
 func isHandoffStubSession(ps *ParsedSession) bool {
 	if ps == nil || ps.PreCompactTurns > 0 || len(ps.ModifiedFiles) > 0 || strings.TrimSpace(ps.CompactSummary) != "" {
 		return false
@@ -715,27 +719,33 @@ func isHandoffStubSession(ps *ParsedSession) bool {
 	if strings.HasSuffix(ps.SourceFile, ".baton.json") {
 		return false
 	}
-	userTurns := 0
-	firstIsBaton := false
+	firstIsHandoff := false
 	for _, t := range ps.PostCompact {
-		if t.Role == "user" {
-			userTurns++
-			if userTurns > 6 {
+		if t.Role != "user" || t.Meta {
+			continue
+		}
+		if firstIsHandoff {
+			if cleanUserPrompt(t.Text) != "" {
 				return false
 			}
-			if userTurns == 1 {
-				low := strings.ToLower(strings.TrimSpace(t.Text))
-				firstIsBaton = strings.Contains(low, "baton") ||
-					strings.Contains(low, "загрузи") ||
-					strings.Contains(low, "продолжи сессию") ||
-					strings.Contains(low, "восстанови сессию") ||
-					strings.Contains(low, "load session") ||
-					strings.Contains(low, "resume session") ||
-					strings.Contains(low, "continue session")
-			}
+			continue
+		}
+		low := strings.ToLower(strings.TrimSpace(t.Text))
+		if cleanUserPrompt(t.Text) == "" && !strings.Contains(low, "baton") {
+			continue
+		}
+		firstIsHandoff = strings.Contains(low, "baton") ||
+			strings.Contains(low, "загрузи") ||
+			strings.Contains(low, "продолжи сессию") ||
+			strings.Contains(low, "восстанови сессию") ||
+			strings.Contains(low, "load session") ||
+			strings.Contains(low, "resume session") ||
+			strings.Contains(low, "continue session")
+		if !firstIsHandoff {
+			return false
 		}
 	}
-	return userTurns > 0 && firstIsBaton
+	return firstIsHandoff
 }
 
 // selectCurrentSessionCandidate picks the agent session that is running baton
@@ -780,7 +790,7 @@ func parseCandidate(c SessionCandidate) (*ParsedSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse session %s: %w", c.Path, err)
 	}
-	if ps.Title == "" {
+	if ps.Title == "" || (!strings.HasSuffix(c.Path, ".baton.json") && c.Title != "") {
 		ps.Title = c.Title
 	}
 	if ps.CWD == "" {
@@ -800,12 +810,11 @@ func parseCurrentSession() (*ParsedSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.Title = currentSessionTitle(c)
 	return parseCandidate(c)
 }
 
-// nameSession implements `baton save [name]`. Without a name it reuses the name
-// this session already has in baton (it was loaded from or saved as that name),
-// then a name the user gave the session in the agent, then the folder name.
+// nameSession implements `baton save [name]` for the current agent session.
 func nameSession(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	ps, err := parseCurrentSession()
@@ -988,6 +997,9 @@ func discoverImportCandidates() []SessionCandidate {
 			}
 			c := batch[i]
 			c.Size = m.Context
+			if !strings.HasSuffix(c.Path, ".baton.json") {
+				c.Title = currentSessionTitle(c)
+			}
 			out = append(out, c)
 		}
 	}
@@ -1118,7 +1130,7 @@ func importSelectedSession(chosen SessionCandidate, ps *ParsedSession, asName st
 	if err != nil {
 		return "", err
 	}
-	return imported + "\n\n" + formatHandoffSummary(saved, handoffDir, nil) + attachCurrentSession(savedName), nil
+	return imported + "\n\n" + formatHandoffSummary(saved, handoffDir, nil) + nameReceivingSession(savedName), nil
 }
 
 // listSessionsReport implements `baton list [--all]`: older versions of saved
@@ -1185,7 +1197,7 @@ func loadSessionContext(agent, query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return formatHandoffSummary(parsed, handoffDir, nil) + attachCurrentSession(chainName(parsed)), nil
+	return formatHandoffSummary(parsed, handoffDir, nil) + nameReceivingSession(chainName(parsed)), nil
 }
 
 // findAndParseSession finds a session in Baton's saved store by number, name, or ID.
@@ -1327,12 +1339,12 @@ func loadCodexThreadNames(codexRoot string) map[string]string {
 }
 
 func discoverSessions(agent, query string) []SessionCandidate {
-	return collectSessions(agent, query, loadAliases(), false)
+	return collectSessions(agent, query, false)
 }
 
 // metadataOnly is used by targeted import. The lookup handles sorting and
 // reads titles stored in transcripts only as it reaches each week's sessions.
-func collectSessions(agent, query string, aliases map[string]string, metadataOnly bool) []SessionCandidate {
+func collectSessions(agent, query string, metadataOnly bool) []SessionCandidate {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
 	agent = strings.ToLower(strings.TrimSpace(agent))
@@ -1356,10 +1368,7 @@ func collectSessions(agent, query string, aliases map[string]string, metadataOnl
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			return
 		}
-		title := aliases[path]
-		if title == "" {
-			title = defaultTitle
-		}
+		title := defaultTitle
 		if query != "" {
 			metaTitle, metaCWD, preview := inspectSessionQuickMeta(ag, path)
 			if title == "" {
@@ -1384,12 +1393,11 @@ func collectSessions(agent, query string, aliases map[string]string, metadataOnl
 		}
 		seen[path] = true
 		all = append(all, SessionCandidate{
-			Agent:       ag,
-			Path:        path,
-			Title:       title,
-			NativeTitle: defaultTitle,
-			CWD:         defaultCWD,
-			ModTime:     info.ModTime(),
+			Agent:   ag,
+			Path:    path,
+			Title:   title,
+			CWD:     defaultCWD,
+			ModTime: info.ModTime(),
 		})
 	}
 
@@ -1492,20 +1500,21 @@ func collectSessions(agent, query string, aliases map[string]string, metadataOnl
 	}
 
 	if agent == "all" || agent == "opencode" {
-		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), aliases, query, metadataOnly)...)
+		all = append(all, discoverOpenCodeSessions(opencodeDBPath(home), query, metadataOnly)...)
 	}
 
 	if agent == "all" || agent == "kimi" {
-		all = append(all, discoverKimiSessions(kimiBaseDir(home), aliases, query)...)
+		all = append(all, discoverKimiSessions(kimiBaseDir(home), query)...)
 	}
 	if agent == "all" || agent == "kiro" {
-		all = append(all, discoverKiroSessions(kiroBaseDir(home), aliases, query)...)
+		all = append(all, discoverKiroSessions(kiroBaseDir(home), query)...)
 	}
 
 	// Include sessions imported from remote URLs via `baton load <URL>`
 	if agent == "all" || agent == "imported" || !metadataOnly {
-		importDir := filepath.Join(filepath.Dir(aliasesFilePath()), "imported")
+		importDir := filepath.Join(batonConfigDir(), "imported")
 		importFiles, _ := filepath.Glob(filepath.Join(importDir, "*.baton.json"))
+		aliases := loadAliases()
 		for _, m := range importFiles {
 			ag := "imported"
 			base := filepath.Base(m)
@@ -1607,7 +1616,7 @@ const opencodeV1SessionsSQL = `SELECT s.id, s.title, s.directory, s.time_updated
 
 // discoverOpenCodeSessions lists top-level sessions. Targeted import reads the
 // full session catalog, leaving out the message queries used for list previews.
-func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query string, metadataOnly bool) []SessionCandidate {
+func discoverOpenCodeSessions(dbPath, query string, metadataOnly bool) []SessionCandidate {
 	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
 		return nil
 	}
@@ -1638,9 +1647,6 @@ func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query st
 	for _, r := range rows {
 		virtualPath := dbPath + "::" + r.ID
 		title := r.Title
-		if a := aliases[virtualPath]; a != "" {
-			title = a
-		}
 		preview := ""
 		if txt := cleanUserPrompt(r.Prompt); txt != "" {
 			preview = truncateInline(txt, 140)
@@ -1649,13 +1655,12 @@ func discoverOpenCodeSessions(dbPath string, aliases map[string]string, query st
 			continue
 		}
 		out = append(out, SessionCandidate{
-			Agent:       "opencode",
-			Path:        virtualPath,
-			Title:       title,
-			NativeTitle: r.Title,
-			CWD:         r.CWD,
-			ModTime:     time.UnixMilli(r.Updated),
-			Preview:     preview,
+			Agent:   "opencode",
+			Path:    virtualPath,
+			Title:   title,
+			CWD:     r.CWD,
+			ModTime: time.UnixMilli(r.Updated),
+			Preview: preview,
 		})
 	}
 	return out

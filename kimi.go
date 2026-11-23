@@ -74,7 +74,7 @@ func loadKimiWorkDirs(root string) map[string]string {
 
 // discoverKimiSessions reads only the current v2 layout shared by Kimi Code CLI
 // and Desktop. The index supplies metadata; sessionDir is deliberately not trusted.
-func discoverKimiSessions(root string, aliases map[string]string, query string) []SessionCandidate {
+func discoverKimiSessions(root, query string) []SessionCandidate {
 	workDirs := loadKimiWorkDirs(root)
 	wires, _ := filepath.Glob(filepath.Join(root, "sessions", "*", "*", "agents", "main", "wire.jsonl"))
 	var out []SessionCandidate
@@ -98,24 +98,19 @@ func discoverKimiSessions(root string, aliases map[string]string, query string) 
 		if cwd == "" {
 			cwd = state.WorkDir
 		}
-		nativeTitle := state.name()
-		title := aliases[path]
-		if title == "" {
-			title = nativeTitle
-		}
+		title := state.name()
 		preview := truncateInline(cleanUserPrompt(state.LastPrompt), 140)
 		if query != "" && !candidateMatchesQuery(path, title, preview, query) {
 			continue
 		}
 		out = append(out, SessionCandidate{
-			Agent:       "kimi",
-			Path:        path,
-			Title:       title,
-			NativeTitle: nativeTitle,
-			CWD:         cwd,
-			ModTime:     info.ModTime(),
-			Preview:     preview,
-			ID:          strings.TrimPrefix(externalID, "session_"),
+			Agent:   "kimi",
+			Path:    path,
+			Title:   title,
+			CWD:     cwd,
+			ModTime: info.ModTime(),
+			Preview: preview,
+			ID:      strings.TrimPrefix(externalID, "session_"),
 		})
 	}
 	return out

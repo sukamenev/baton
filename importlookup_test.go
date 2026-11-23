@@ -16,8 +16,10 @@ func TestImportLookupAcrossWeeksAndAgents(t *testing.T) {
 	// The name was never saved in Baton and comes after a long tool result.
 	writeLines(t, claudePath, now.AddDate(0, 0, -10),
 		claudeUser("Investigate the checkout"),
+		`{"type":"custom-title","customTitle":"Previous Checkout"}`,
 		strings.Repeat("x", 3*importTitleWindow),
-		`{"type":"custom-title","customTitle":"Checkout"}`)
+		`{"type":"custom-title","customTitle":"Checkout"}`,
+		strings.Repeat("x", 3*importTitleWindow))
 	codexDir := filepath.Join(tmp, "codex")
 	const codexID = "fedcba98-1234-4234-8234-123456789abc"
 	writeLines(t, filepath.Join(codexDir, "session_index.jsonl"), now,
@@ -48,7 +50,9 @@ func TestImportLookupAcrossWeeksAndAgents(t *testing.T) {
 		{"checkout", 60, codexPath},
 		{"follow-up", 60, ""},
 		{"Checkout follow-up", 60, fragment},
-		{"Older Baton alias", 60, claudePath},
+		{"Previous Checkout", 60, ""},
+		{"Older Baton alias", 60, ""},
+		{"abcdef12", 60, claudePath},
 		{"Archive Session", 60, ""},
 		{"Archive Session", 90, archive},
 		{"12345678", 60, archive},
@@ -76,7 +80,7 @@ func TestImportWorkerKeepsPositionAndRepliesWhenExhausted(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		searchImportAgent("claude", worker, nil, "Project")
+		searchImportAgent("claude", worker, "Project")
 	}()
 	t.Cleanup(func() {
 		close(worker.since)

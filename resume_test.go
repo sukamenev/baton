@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// TestMain keeps tests from linking or renaming the real agent session that
-// runs them (attachCurrentSession finds it through the agent's environment).
+// TestMain keeps tests from renaming the real agent session that runs them.
 // Fixtures use folders like /tmp, so the folder check is off unless a test
 // turns it on.
 func TestMain(m *testing.M) {
@@ -313,14 +312,70 @@ func TestRenameKeepsUserSetClaudeName(t *testing.T) {
 	path := filepath.Join(tmp, "claude", "projects", "-w", "eeeeeeee-5555-4555-8555-555555555555.jsonl")
 	writeLines(t, path, time.Now(), claudeUser("hi"), `{"type":"custom-title","customTitle":"my name","sessionId":"eeeeeeee-5555-4555-8555-555555555555"}`)
 	c := SessionCandidate{Agent: "claude", Path: path}
-	if note := renameAgentSession(c, "proj", ""); note != "" {
+	if note, _ := renameAgentSession(c, "proj"); note != "" {
 		t.Fatalf("a name the user set must stay, got %q", note)
 	}
-	if note := renameAgentSession(c, "proj", "my name"); note == "" {
-		t.Fatal("a name baton set earlier may be replaced")
+	if got := userSessionName("claude", path); got != "my name" {
+		t.Fatalf("expected the original custom title, got %q", got)
 	}
-	if got := userSessionName("claude", path); got != "proj" {
-		t.Fatalf("expected the new custom title, got %q", got)
+}
+
+func TestRenamedSessionIgnoresLegacyNames(t *testing.T) {
+	tmp := isolateAgents(t)
+	now := time.Now()
+	workspace := filepath.Join(tmp, "proj")
+	const oldName = "CUDA_mega_ship"
+	const newName = "lottery"
+	const id = "01a1ef75-55ae-7163-8cf9-01e04bce91e4"
+	path := filepath.Join(tmp, "codex", "sessions", "rollout-fixture-"+id+".jsonl")
+	writeLines(t, path, now,
+		codexRow("response_item", codexMessage("user", "baton load CUDA_mega_ship")),
+		codexRow("response_item", codexMessage("user", "Work on the lottery")))
+	writeLines(t, filepath.Join(tmp, "codex", "session_index.jsonl"), now,
+		`{"id":"`+id+`","thread_name":"`+oldName+`"}`,
+		`{"id":"`+id+`","thread_name":"`+newName+`"}`)
+	snapshot := &ParsedSession{
+		Agent: "claude", SessionID: "claude-original", CWD: workspace,
+		PostCompact: []SessionTurn{{Role: "user", Text: "Original CUDA task"}},
+	}
+	savedPath, _, err := saveSessionToBatonStore(snapshot, oldName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(savedPath, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	legacyLink := `{"` + sessionIDForPath("codex", path) + `":{"name":"` + oldName + `","prompts":0}}`
+	writeLines(t, filepath.Join(batonConfigDir(), "links.json"), now, legacyLink)
+	if err := saveAliases(map[string]string{path: oldName}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ps, err := lookupImport(oldName, 60, now); err != nil || ps != nil {
+		t.Fatalf("stale import name matched: %+v, %v", ps, err)
+	}
+	if c, ps, err := lookupImport(newName, 60, now); err != nil || c.Path != path || ps.Title != newName {
+		t.Fatalf("current import name did not match: %+v, %v", c, err)
+	}
+	if report, err := resumeSession([]string{oldName}); err != nil ||
+		!strings.Contains(report, "Original CUDA task") || strings.Contains(report, id) {
+		t.Fatalf("old name must resolve to its snapshot: %v\n%s", err, report)
+	}
+	t.Setenv("CODEX_THREAD_ID", id)
+	if report, err := nameSession(""); err != nil || !strings.Contains(report, "**lottery**") {
+		t.Fatalf("save must use the current Codex title: %v\n%s", err, report)
+	}
+}
+
+func TestRenameSessionHints(t *testing.T) {
+	for agent, want := range map[string]string{
+		"agy": "`/rename My Session`", "cursor": "`/rename My Session`",
+		"pi": "`/name My Session`", "kimi": "`/title My Session`",
+		"opencode": `Rename session, and enter "My Session"`,
+	} {
+		if hint := renameSessionHint(agent, "My Session"); !strings.Contains(hint, want) {
+			t.Errorf("%s: got %q, want %q", agent, hint, want)
+		}
 	}
 }
 

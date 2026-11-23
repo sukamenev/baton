@@ -201,7 +201,7 @@ func TestParsePiTreeAndOpenCodeSQLite(t *testing.T) {
 		if out, err := exec.Command("sqlite3", dbPath, schemaSQL).CombinedOutput(); err != nil {
 			t.Fatalf("sqlite3 init failed: %v (%s)", err, string(out))
 		}
-		candidates := discoverOpenCodeSessions(dbPath, nil, "", false)
+		candidates := discoverOpenCodeSessions(dbPath, "", false)
 		if len(candidates) != 1 || candidates[0].Title != "Fix add in calc.py" || candidates[0].Preview != "Now run the tests" || candidates[0].CWD != "/srv/app" {
 			t.Fatalf("expected one top-level OpenCode session with the last prompt, got %+v", candidates)
 		}
@@ -247,7 +247,7 @@ func TestParseOpenCodeV2(t *testing.T) {
 	if out, err := exec.Command("sqlite3", dbPath, schemaSQL).CombinedOutput(); err != nil {
 		t.Fatalf("sqlite3 init failed: %v (%s)", err, string(out))
 	}
-	candidates := discoverOpenCodeSessions(dbPath, nil, "", false)
+	candidates := discoverOpenCodeSessions(dbPath, "", false)
 	if len(candidates) != 1 || candidates[0].Title != "Fix mul in calc2.py" || candidates[0].Preview != "Now run the tests" {
 		t.Fatalf("expected one top-level OpenCode 2.x session with the last prompt, got %+v", candidates)
 	}

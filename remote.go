@@ -401,7 +401,7 @@ func pullRemoteSession(token string) (string, error) {
 	}
 
 	header.WriteString(formatHandoffSummary(bundle.Session, handoffDir, bundle.GlobalRules))
-	header.WriteString(attachCurrentSession(chainName(bundle.Session)))
+	header.WriteString(nameReceivingSession(chainName(bundle.Session)))
 	return header.String(), nil
 }
 

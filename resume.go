@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -128,45 +127,6 @@ func newVersionName(name string, before map[string]bool) string {
 	return ""
 }
 
-// --- Links: which agent sessions continue which saved name ---
-
-// sessionLink records that an agent session holds a point of a saved name: it
-// was saved under it or a saved session was loaded into it. Prompts is the
-// number of typed user prompts at that moment: when it changes, the work went
-// on in that session after baton last saw it.
-type sessionLink struct {
-	Name    string    `json:"name"`
-	Prompts int       `json:"prompts"`
-	At      time.Time `json:"at"`
-}
-
-func linksFilePath() string {
-	return filepath.Join(batonConfigDir(), "links.json")
-}
-
-func loadLinks() map[string]sessionLink {
-	out := make(map[string]sessionLink)
-	if data, err := os.ReadFile(linksFilePath()); err == nil {
-		_ = json.Unmarshal(data, &out)
-	}
-	return out
-}
-
-func saveLinks(links map[string]sessionLink) {
-	path := linksFilePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return
-	}
-	data, err := json.MarshalIndent(links, "", "  ")
-	if err != nil {
-		return
-	}
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, data, 0600) == nil {
-		_ = os.Rename(tmp, path)
-	}
-}
-
 // countTypedPrompts counts the prompts the user typed (not injected text, not
 // bare baton commands).
 func countTypedPrompts(turns []SessionTurn) int {
@@ -177,19 +137,6 @@ func countTypedPrompts(turns []SessionTurn) int {
 		}
 	}
 	return n
-}
-
-// linkSavedOrigin links the agent session a snapshot was saved from to its name.
-func linkSavedOrigin(ps *ParsedSession, name string) {
-	if ps == nil || ps.SourceFile == "" || strings.HasSuffix(ps.SourceFile, ".baton.json") {
-		return
-	}
-	if _, err := os.Stat(ps.SourceFile); err != nil {
-		return // a session pulled from another computer
-	}
-	links := loadLinks()
-	links[ps.SessionID] = sessionLink{Name: name, Prompts: countTypedPrompts(ps.AllTurns), At: time.Now()}
-	saveLinks(links)
 }
 
 // chainName is the saved name a loaded snapshot continues: an older version
@@ -262,60 +209,55 @@ func currentSessionCandidate(cands []SessionCandidate) (SessionCandidate, bool) 
 	return best, found
 }
 
-// attachCurrentSession runs after a saved session was loaded into the agent
-// session running baton: it links that session to name (so `baton save` without
-// a name and `baton resume` know it continues name) and names it so in the agent
-// where baton can do that safely. Returns a note for the report.
-func attachCurrentSession(name string) string {
+// nameReceivingSession gives a handoff receiver the same visible name, or
+// tells the user how to set it in the agent.
+func nameReceivingSession(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" || os.Getenv("BATON_NO_ATTACH") != "" {
 		return ""
 	}
-	cur, ok := currentSessionCandidate(discoverSessions("all", ""))
-	if !ok {
-		return ""
+	agent := detectCallerAgent()
+	switch agent {
+	case "claude", "codex", "kiro":
+		cur, ok := currentSessionCandidate(collectSessions(agent, "", true))
+		if ok && cur.Agent == agent && isCallerOwnSession(cur.Path) {
+			if note, handled := renameAgentSession(cur, name); handled {
+				if note != "" {
+					return "\n" + note + "\n"
+				}
+				return ""
+			}
+		}
 	}
-	key := sessionIDForPath(cur.Agent, cur.Path)
-	m := measureSessions([]SessionCandidate{cur})[0]
-	links := loadLinks()
-	prev := links[key]
-	links[key] = sessionLink{Name: name, Prompts: m.Prompts, At: time.Now()}
-	saveLinks(links)
-	if note := renameAgentSession(cur, name, prev.Name); note != "" {
-		return "\n" + note + "\n"
-	}
-	return ""
+	return renameSessionHint(agent, name)
 }
 
-// lastJSONLField returns the last non-empty string field of rows of type typ
-// in a JSONL log.
-func lastJSONLField(path, typ, field string) string {
-	f, err := os.Open(path)
-	if err != nil {
+func renameSessionHint(agent, name string) string {
+	name = strings.NewReplacer("\r", " ", "\n", " ").Replace(name)
+	var command string
+	switch agent {
+	case "agy", "claude", "codex", "cursor":
+		command = "/rename "
+	case "pi":
+		command = "/name "
+	case "kimi":
+		command = "/title "
+	case "kiro":
+		command = "/sessions rename "
+	case "opencode":
+		return fmt.Sprintf("\nTo find this session by name later, open OpenCode's command palette, choose Rename session, and enter %q.\n", name)
+	default:
 		return ""
 	}
-	defer f.Close()
-	marker := []byte(`"` + typ + `"`)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
-	out := ""
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if !strings.Contains(string(line), string(marker)) {
-			continue
-		}
-		var row map[string]interface{}
-		if json.Unmarshal(line, &row) != nil {
-			continue
-		}
-		if t, _ := row["type"].(string); t != typ {
-			continue
-		}
-		if v, _ := row[field].(string); strings.TrimSpace(v) != "" {
-			out = strings.TrimSpace(v)
-		}
+	fence := "`"
+	for strings.Contains(command+name, fence) {
+		fence += "`"
 	}
-	return out
+	instruction := command + name
+	if len(fence) > 1 {
+		instruction = " " + instruction + " "
+	}
+	return "\nTo find this session by name later, enter " + fence + instruction + fence + " in the agent.\n"
 }
 
 // userSessionName is the name the user gave a session in the agent itself, for
@@ -355,56 +297,45 @@ func appendJSONLine(path string, row interface{}, create bool) error {
 	return err
 }
 
-// renameAgentSession gives the agent session the saved name, so the agent's own
-// resume menu shows it instead of an automatic title. It writes the same record
-// the agent's own rename writes (an append-only log or Kiro's locked title
-// sidecar). A name the user set in Claude Code or Kiro is kept; prevName is
-// the name baton gave this session earlier, which may be replaced.
-func renameAgentSession(c SessionCandidate, name, prevName string) string {
+// renameAgentSession preserves a title already set in the agent. Codex's
+// index stores generated and user-set titles in the same form, so a different
+// existing title requires the native /rename command.
+func renameAgentSession(c SessionCandidate, name string) (note string, handled bool) {
 	switch c.Agent {
 	case "kiro":
-		if strings.EqualFold(kiroUserTitle(c.Path), name) || !renameKiroSession(c.Path, name, prevName) {
-			return ""
+		if kiroUserTitle(c.Path) != "" {
+			return "", true
 		}
-		return fmt.Sprintf("This Kiro CLI session is now named **%s** in `/sessions`.", name)
+		if renameKiroSession(c.Path, name) {
+			return fmt.Sprintf("This Kiro CLI session is now named **%s** in `/sessions`.", name), true
+		}
 	case "claude":
-		current := userSessionName("claude", c.Path)
-		if strings.EqualFold(current, name) {
-			return ""
-		}
-		if current != "" && current != prevName && current != loadAliases()[c.Path] {
-			return ""
+		if userSessionName("claude", c.Path) != "" {
+			return "", true
 		}
 		id := strings.TrimSuffix(filepath.Base(c.Path), filepath.Ext(c.Path))
-		if appendJSONLine(c.Path, map[string]string{"type": "custom-title", "customTitle": name, "sessionId": id}, false) != nil {
-			return ""
+		if appendJSONLine(c.Path, map[string]string{"type": "custom-title", "customTitle": name, "sessionId": id}, false) == nil {
+			return fmt.Sprintf("This Claude Code session is now named **%s** (as in `/rename`).", name), true
 		}
-		return fmt.Sprintf("This Claude Code session is now named **%s** (as in `/rename`).", name)
 	case "codex":
-		if strings.EqualFold(c.Title, name) {
-			return ""
-		}
 		home, _ := os.UserHomeDir()
-		idx := filepath.Join(codexBaseDir(home), "session_index.jsonl")
-		row := map[string]string{"id": agentSessionID(c.Path), "thread_name": name, "updated_at": time.Now().UTC().Format(time.RFC3339Nano)}
-		if appendJSONLine(idx, row, true) != nil {
-			return ""
+		root := codexBaseDir(home)
+		id := agentSessionID(c.Path)
+		if current := loadCodexThreadNames(root)[id]; current != "" {
+			return "", strings.EqualFold(current, name)
 		}
-		return fmt.Sprintf("This Codex session is now named **%s** in `/resume`.", name)
+		row := map[string]string{"id": id, "thread_name": name, "updated_at": time.Now().UTC().Format(time.RFC3339Nano)}
+		if appendJSONLine(filepath.Join(root, "session_index.jsonl"), row, true) == nil {
+			return fmt.Sprintf("This Codex session is now named **%s** in `/resume`.", name), true
+		}
 	}
-	return ""
+	return "", false
 }
 
-// defaultSaveName is the name `baton save` uses when none is given: the saved
-// name this session continues, a name the user gave it in the agent, the folder.
+// defaultSaveName uses the agent's current title, then the workspace folder.
 func defaultSaveName(ps *ParsedSession) string {
-	if l, ok := loadLinks()[ps.SessionID]; ok && strings.TrimSpace(l.Name) != "" {
-		return l.Name
-	}
-	if ps.SourceFile != "" {
-		if n := userSessionName(ps.Agent, ps.SourceFile); n != "" {
-			return n
-		}
+	if name := strings.TrimSpace(ps.Title); name != "" {
+		return name
 	}
 	cwd := ps.CWD
 	if cwd == "" {
@@ -418,60 +349,38 @@ func defaultSaveName(ps *ParsedSession) string {
 
 // --- baton resume ---
 
-// latestAgentPoint returns the most recently active agent session that
-// continues name: one linked to it whose typed prompts changed since baton linked
-// it, or one the agent itself names so. The session running baton is skipped.
-func latestAgentPoint(name string, notBefore time.Time) (SessionCandidate, bool) {
+// latestAgentPoint looks for work under the agent's current title. A session
+// that only received a handoff is not a newer point of the work.
+func latestAgentPoint(name string, notBefore time.Time, snapshot *ParsedSession) (SessionCandidate, bool) {
 	cands := discoverSessions("all", "")
-	curKey := ""
-	if cur, ok := currentSessionCandidate(cands); ok {
-		curKey = sessionIDForPath(cur.Agent, cur.Path)
-	}
-	links := loadLinks()
-	var pick []SessionCandidate
-	var linked []*sessionLink
+	cur, hasCurrent := currentSessionCandidate(cands)
+	var matches []SessionCandidate
 	for _, c := range cands {
-		key := sessionIDForPath(c.Agent, c.Path)
-		if key == curKey || isCallerOwnSession(c.Path) {
+		if !c.ModTime.After(notBefore) || strings.HasSuffix(c.Path, ".baton.json") ||
+			hasCurrent && c.Path == cur.Path || isCallerOwnSession(c.Path) {
 			continue
 		}
-		l, ok := links[key]
-		isLinked := ok && strings.EqualFold(l.Name, name)
-		if !isLinked && !strings.EqualFold(c.Title, name) {
-			continue
-		}
-		pick = append(pick, c)
-		if isLinked {
-			l := l
-			linked = append(linked, &l)
-		} else {
-			linked = append(linked, nil)
+		if c.Title = currentSessionTitle(c); strings.EqualFold(c.Title, name) {
+			matches = append(matches, c)
 		}
 	}
-	if len(pick) == 0 {
-		return SessionCandidate{}, false
-	}
-	metas := measureSessions(pick)
-	found := false
-	var best SessionCandidate
-	for i, c := range pick {
-		if l := linked[i]; l != nil {
-			if metas[i].Prompts == l.Prompts {
-				continue // nothing typed there since it was saved or loaded
-			}
-		} else if metas[i].Stub || metas[i].Prompts == 0 || !c.ModTime.After(notBefore.Add(5*time.Minute)) {
-			// Named so only by title: the session a snapshot was saved from is
-			// written for a moment after the save, so demand a clear lead.
+	sortImportMatches(matches)
+	metas := measureSessions(matches)
+	for i, c := range matches {
+		m := metas[i]
+		if m.Stub || m.Prompts == 0 {
 			continue
 		}
-		if !c.ModTime.After(notBefore) {
+		if snapshot != nil && sessionIDForPath(c.Agent, c.Path) == snapshot.SessionID &&
+			snapshotUnchanged(snapshot, c, notBefore, m.Prompts) {
 			continue
 		}
-		if !found || c.ModTime.After(best.ModTime) {
-			best, found = c, true
+		if c.CWD == "" && !strings.Contains(c.Path, "::") {
+			_, c.CWD, _ = inspectSessionQuickMeta(c.Agent, c.Path)
 		}
+		return c, true
 	}
-	return best, found
+	return SessionCandidate{}, false
 }
 
 // nativeResumeCommand is the terminal command that resumes a session in its
@@ -551,7 +460,7 @@ func shellShortPath(p string) string {
 	return shellPath(sp)
 }
 
-// handoffFromSavedFile loads a saved snapshot and links the current session to name.
+// handoffFromSavedFile loads a saved snapshot and names the receiving session.
 func handoffFromSavedFile(agent, path, name string) (string, error) {
 	parsed, err := parseSessionFile(agent, path, time.Now())
 	if err != nil {
@@ -564,7 +473,7 @@ func handoffFromSavedFile(agent, path, name string) (string, error) {
 	if name == "" {
 		name = chainName(parsed)
 	}
-	return formatHandoffSummary(parsed, handoffDir, nil) + attachCurrentSession(name), nil
+	return formatHandoffSummary(parsed, handoffDir, nil) + nameReceivingSession(name), nil
 }
 
 // resumeSession implements `baton resume <name|#|id> [--load]`: it continues
@@ -613,10 +522,12 @@ func resumeSession(args []string) (string, error) {
 	}
 
 	var notBefore time.Time
+	var snapshot *ParsedSession
 	if snap != nil {
 		notBefore = snap.ModTime
+		snapshot, _ = parseSessionFile(snap.Agent, snap.Path, snap.ModTime)
 	}
-	if point, ok := latestAgentPoint(name, notBefore); ok {
+	if point, ok := latestAgentPoint(name, notBefore, snapshot); ok {
 		where := fmt.Sprintf("**%s** went on in [%s] session %s at %s", name, point.Agent, shortSessionID(point.SessionID()), shortTime(point.ModTime))
 		if snap != nil {
 			where += ", after the copy saved at " + shortTime(snap.ModTime)
@@ -651,19 +562,17 @@ func resumeSession(args []string) (string, error) {
 	}
 	if snap != nil {
 		if !forceLoad {
-			// Saved in this agent and nothing typed there since: the agent's own
-			// resume reaches the same point with the whole conversation.
-			if ps, err := parseSessionFile(snap.Agent, snap.Path, snap.ModTime); err == nil {
-				if origin, unchanged, ok := snapshotOrigin(ps, snap.ModTime); ok && unchanged {
-					caller := detectCallerAgent()
-					cur, curOK := currentSessionCandidate(discoverSessions("all", ""))
-					if curOK && sessionIDForPath(cur.Agent, cur.Path) == ps.SessionID {
-						return fmt.Sprintf("This conversation already is **%s**: nothing to load.\n", name), nil
-					}
-					if caller == "" || caller == origin.Agent {
-						return fmt.Sprintf("**%s** was saved from [%s] session %s at %s, and nothing was typed there since. Resume it natively, without loss:\n%sTo load the saved copy here through baton instead: `baton resume %s --load`\n",
-							name, origin.Agent, shortSessionID(origin.SessionID()), shortTime(snap.ModTime), nativeResumeHint(origin), name), nil
-					}
+			// The agent's own resume reaches the snapshot's point when work
+			// has not continued in its source session.
+			if origin, unchanged, ok := snapshotOrigin(snapshot, snap.ModTime); ok && unchanged {
+				caller := detectCallerAgent()
+				cur, curOK := currentSessionCandidate(discoverSessions("all", ""))
+				if curOK && sessionIDForPath(cur.Agent, cur.Path) == snapshot.SessionID {
+					return fmt.Sprintf("This conversation already is **%s**: nothing to load.\n", name), nil
+				}
+				if caller == "" || caller == origin.Agent {
+					return fmt.Sprintf("**%s** was saved from [%s] session %s at %s, and nothing was typed there since. Resume it natively, without loss:\n%sTo load the saved copy here through baton instead: `baton resume %s --load`\n",
+						name, origin.Agent, shortSessionID(origin.SessionID()), shortTime(snap.ModTime), nativeResumeHint(origin), name), nil
 				}
 			}
 		}
@@ -682,7 +591,7 @@ func resumeSession(args []string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return formatHandoffSummary(parsed, handoffDir, nil) + attachCurrentSession(chainName(parsed)), nil
+		return formatHandoffSummary(parsed, handoffDir, nil) + nameReceivingSession(chainName(parsed)), nil
 	}
 	if c, ok := findRecentResumeCandidate(discoverImportCandidates(), query); ok {
 		ps, err := parseCandidate(c)
@@ -874,14 +783,30 @@ func snapshotOrigin(ps *ParsedSession, savedAt time.Time) (origin SessionCandida
 		if sessionIDForPath(c.Agent, c.Path) != ps.SessionID {
 			continue
 		}
-		if l, linked := loadLinks()[ps.SessionID]; linked {
-			unchanged = measureSessions([]SessionCandidate{c})[0].Prompts == l.Prompts
-		} else {
-			unchanged = !c.ModTime.After(savedAt.Add(5 * time.Minute))
+		title := currentSessionTitle(c)
+		if title != "" && !strings.EqualFold(title, ps.Title) &&
+			(ps.SourcePrompts == nil || !strings.EqualFold(title, ps.SourceTitle)) {
+			return SessionCandidate{}, false, false
 		}
-		return c, unchanged, true
+		if c.CWD == "" {
+			c.CWD = ps.CWD
+		}
+		prompts := 0
+		if ps.SourcePrompts != nil {
+			prompts = measureSessions([]SessionCandidate{c})[0].Prompts
+		}
+		return c, snapshotUnchanged(ps, c, savedAt, prompts), true
 	}
 	return SessionCandidate{}, false, false
+}
+
+// Older snapshots have no prompt count; their modification time is the best
+// available indication of whether the source session went on.
+func snapshotUnchanged(ps *ParsedSession, c SessionCandidate, savedAt time.Time, prompts int) bool {
+	if ps.SourcePrompts != nil {
+		return *ps.SourcePrompts == prompts
+	}
+	return !c.ModTime.After(savedAt.Add(5 * time.Minute))
 }
 
 // snapshotNative is the native resume command for a snapshot's origin session
